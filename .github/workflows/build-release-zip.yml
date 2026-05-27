@@ -1,0 +1,53 @@
+name: Build WordPress Plugin ZIP
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and attach plugin ZIP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare plugin folder
+        run: |
+          PLUGIN_SLUG="bloglogistics-markdown-for-agents"
+          BUILD_DIR="/tmp/${PLUGIN_SLUG}"
+
+          rm -rf "${BUILD_DIR}"
+          mkdir -p "${BUILD_DIR}"
+
+          rsync -av \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude="${PLUGIN_SLUG}.zip" \
+            ./ "${BUILD_DIR}/"
+
+      - name: Create ZIP
+        run: |
+          PLUGIN_SLUG="bloglogistics-markdown-for-agents"
+          cd /tmp
+          zip -r "${GITHUB_WORKSPACE}/${PLUGIN_SLUG}.zip" "${PLUGIN_SLUG}"
+
+      - name: Upload ZIP to release
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PLUGIN_SLUG="bloglogistics-markdown-for-agents"
+          gh release upload "${{ github.event.release.tag_name }}" "${PLUGIN_SLUG}.zip" --clobber
+
+      - name: Upload ZIP as workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bloglogistics-markdown-for-agents
+          path: bloglogistics-markdown-for-agents.zip
