@@ -38,6 +38,6 @@ if ( ! class_exists( 'BlogLogistics_Markdown_For_Agents_Updater', false ) ) {
                 $args['plugin_file'],
                 $args['slug']
             );
-        }
+}
     }
 }
