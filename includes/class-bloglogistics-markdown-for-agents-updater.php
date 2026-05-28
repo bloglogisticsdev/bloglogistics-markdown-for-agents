@@ -1,6 +1,6 @@
 <?php
 /**
- * GitHub updater for BlogLogistics Markdown for Agents.
+ * Manifest updater for BlogLogistics Markdown for Agents.
  *
  * @package BlogLogistics_Markdown_For_Agents
  */
@@ -11,12 +11,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 use YahnisElsts\PluginUpdateChecker\v5\PucFactory;
 
-if ( ! class_exists( 'BlogLogistics_Markdown_For_Agents_GitHub_Updater', false ) ) {
+if ( ! class_exists( 'BlogLogistics_Markdown_For_Agents_Updater', false ) ) {
 
-    final class BlogLogistics_Markdown_For_Agents_GitHub_Updater {
+    final class BlogLogistics_Markdown_For_Agents_Updater {
 
         /**
-         * Initialise GitHub-based plugin updates.
+         * Initialise manifest-based plugin updates.
          *
          * @param array<string, string> $args Updater arguments.
          */
@@ -33,13 +33,11 @@ if ( ! class_exists( 'BlogLogistics_Markdown_For_Agents_GitHub_Updater', false )
                 return;
             }
 
-            $update_checker = PucFactory::buildUpdateChecker(
+            PucFactory::buildUpdateChecker(
                 $args['repo_url'],
                 $args['plugin_file'],
                 $args['slug']
             );
-
-            $update_checker->getVcsApi()->enableReleaseAssets( '/\.zip($|[?&#])/i' );
         }
     }
 }
