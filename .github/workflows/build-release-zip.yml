@@ -55,32 +55,88 @@ jobs:
       - name: Build update manifest
         if: github.event_name == 'release'
         run: |
-          PLUGIN_NAME="BlogLogistics Markdown for Agents"
-          PLUGIN_SLUG="bloglogistics-markdown-for-agents"
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"
-          DOWNLOAD_URL="https://github.com/bloglogisticsdev/bloglogistics-markdown-for-agents/releases/download/v${VERSION}/${PLUGIN_SLUG}.zip"
-          HOMEPAGE="https://github.com/bloglogisticsdev/bloglogistics-markdown-for-agents"
-          LAST_UPDATED="$(date -u +%Y-%m-%d)"
+          python3 <<'PY'
+          import datetime
+          import html
+          import json
+          import re
+          from pathlib import Path
 
-          cat > "${PLUGIN_SLUG}.json" <<EOF
-          {
-            "name": "${PLUGIN_NAME}",
-            "version": "${VERSION}",
-            "download_url": "${DOWNLOAD_URL}",
-            "homepage": "${HOMEPAGE}",
-            "requires": "7.0",
-            "tested": "7.0",
-            "requires_php": "8.3",
-            "last_updated": "${LAST_UPDATED}",
-            "sections": {
-              "description": "Adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.",
-              "changelog": "<h4>${VERSION}</h4><ul><li>See the GitHub release notes for this version.</li></ul>"
-            }
+          plugin_name = "BlogLogistics Markdown for Agents"
+          plugin_slug = "bloglogistics-markdown-for-agents"
+          repo_url = "https://github.com/bloglogisticsdev/bloglogistics-markdown-for-agents"
+          tag_name = "${{ github.event.release.tag_name }}"
+          version = tag_name.lstrip("v")
+          download_url = f"{repo_url}/releases/download/v{version}/{plugin_slug}.zip"
+          last_updated = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+          readme_path = Path("readme.txt")
+          readme = readme_path.read_text(encoding="utf-8", errors="replace")
+
+          changelog_match = re.search(
+              r"^==\s*Changelog\s*==\s*(.*?)(?=^==\s+|\Z)",
+              readme,
+              flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+          )
+
+          changelog_text = changelog_match.group(1).strip() if changelog_match else ""
+
+          html_parts = []
+          current_items = []
+
+          def flush_items():
+              nonlocal_items = list(current_items)
+              current_items.clear()
+              if nonlocal_items:
+                  html_parts.append("<ul>")
+                  for item in nonlocal_items:
+                      html_parts.append(f"<li>{html.escape(item)}</li>")
+                  html_parts.append("</ul>")
+
+          for raw_line in changelog_text.splitlines():
+              line = raw_line.strip()
+              if not line:
+                  continue
+
+              version_heading = re.match(r"^=\s*(.*?)\s*=$", line)
+              if version_heading:
+                  flush_items()
+                  html_parts.append(f"<h4>{html.escape(version_heading.group(1))}</h4>")
+                  continue
+
+              if line.startswith("*"):
+                  current_items.append(line.lstrip("*").strip())
+                  continue
+
+              current_items.append(line)
+
+          flush_items()
+
+          changelog_html = "".join(html_parts) if html_parts else "<p>No changelog available.</p>"
+
+          manifest = {
+              "name": plugin_name,
+              "version": version,
+              "download_url": download_url,
+              "homepage": repo_url,
+              "requires": "7.0",
+              "tested": "7.0",
+              "requires_php": "8.3",
+              "last_updated": last_updated,
+              "sections": {
+                  "description": "Adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.",
+                  "changelog": changelog_html,
+              },
           }
-          EOF
 
-          cat "${PLUGIN_SLUG}.json"
+          output_path = Path(f"{plugin_slug}.json")
+          output_path.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          print(output_path.read_text(encoding="utf-8"))
+          PY
 
       - name: Upload update manifest by FTPS
         if: github.event_name == 'release'
