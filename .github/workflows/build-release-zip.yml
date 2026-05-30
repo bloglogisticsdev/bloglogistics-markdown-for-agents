@@ -65,6 +65,7 @@ jobs:
           plugin_name = "BlogLogistics Markdown for Agents"
           plugin_slug = "bloglogistics-markdown-for-agents"
           repo_url = "https://github.com/bloglogisticsdev/bloglogistics-markdown-for-agents"
+          icon_base_url = "https://updates.bloglogistics.com/plugins/assets"
           tag_name = "${{ github.event.release.tag_name }}"
           version = tag_name.lstrip("v")
           download_url = f"{repo_url}/releases/download/v{version}/{plugin_slug}.zip"
@@ -123,6 +124,11 @@ jobs:
               "tested": "7.0",
               "requires_php": "8.3",
               "last_updated": last_updated,
+              "icons": {
+                  "1x": f"{icon_base_url}/icon-128x128.png",
+                  "2x": f"{icon_base_url}/icon-256x256.png",
+                  "default": f"{icon_base_url}/icon-128x128.png",
+              },
               "sections": {
                   "description": "Adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.",
                   "changelog": changelog_html,

@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, content negotiation
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 1.1.7
+Stable tag: 1.1.8
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -21,6 +21,9 @@ BlogLogistics Markdown for Agents adds Markdown content negotiation for AI agent
 3. Visit /index.md on the site to confirm the Markdown endpoint works.
 
 == Changelog ==
+
+= 1.1.8 =
+* Add BlogLogistics plugin icon assets and update manifest icon metadata.
 
 = 1.1.7 =
 * Generate the update manifest changelog from readme.txt so WordPress displays the full changelog.
