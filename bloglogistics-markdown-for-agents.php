@@ -3,7 +3,7 @@
  * Plugin Name:       BlogLogistics Markdown for Agents
  * Plugin URI:        https://github.com/bloglogisticsdev/bloglogistics-markdown-for-agents
  * Description:       Adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.
- * Version:           1.1.9
+ * Version:           1.1.10
  * Requires at least: 7.0
  * Requires PHP:      8.3
  * Author:            BlogLogistics
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define( 'BLOGLOGISTICS_MFA_VERSION', '1.1.9' );
+define( 'BLOGLOGISTICS_MFA_VERSION', '1.1.10' );
 define( 'BLOGLOGISTICS_MFA_SLUG', 'bloglogistics-markdown-for-agents' );
 define( 'BLOGLOGISTICS_MFA_FILE', __FILE__ );
 define( 'BLOGLOGISTICS_MFA_DIR', plugin_dir_path( __FILE__ ) );

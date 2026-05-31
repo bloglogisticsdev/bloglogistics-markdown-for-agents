@@ -124,6 +124,8 @@ jobs:
               "tested": "7.0",
               "requires_php": "8.3",
               "last_updated": last_updated,
+              "author": '<a href="https://www.bloglogistics.com" target="_blank" rel="noopener noreferrer">BlogLogistics</a>',
+              "author_profile": "https://www.bloglogistics.com",
               "icons": {
                   "1x": f"{icon_base_url}/icon-128x128.png",
                   "2x": f"{icon_base_url}/icon-256x256.png",
@@ -136,6 +138,8 @@ jobs:
               },
               "sections": {
                   "description": "Adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.",
+                  "installation": "<ol><li>Upload the plugin folder to /wp-content/plugins/.</li><li>Activate the plugin in WordPress.</li><li>Visit /index.md on the site to confirm the Markdown endpoint works.</li><li>Request the homepage with an Accept: text/markdown header to confirm Markdown content negotiation works.</li></ol>",
+                  "faq": "<h4>What does this plugin do?</h4><p>It adds a Markdown-friendly version of the site's homepage at /index.md and can return Markdown when the homepage is requested by software that prefers text/markdown.</p><h4>Does this replace the normal website homepage?</h4><p>No. Normal visitors continue to see the regular HTML homepage. The Markdown output is available for agents, tools, and other clients that request it.</p><h4>Does this create or edit WordPress pages?</h4><p>No. The plugin serves Markdown output dynamically using the current site's public URLs and metadata.</p><h4>Where is the Markdown version of the homepage?</h4><p>The Markdown version is available at /index.md.</p><h4>Does this plugin manage robots.txt or AI training preferences?</h4><p>No. This plugin only provides Markdown content negotiation and a machine-readable homepage. Robots.txt content preferences are handled by a separate BlogLogistics plugin.</p>",
                   "changelog": changelog_html,
               },
           }
