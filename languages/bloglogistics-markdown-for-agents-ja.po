@@ -1,0 +1,117 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: BlogLogistics Markdown for Agents 1.3.0\n"
+"Report-Msgid-Bugs-To: https://www.bloglogistics.com\n"
+"POT-Creation-Date: 2026-06-01 00:00+0000\n"
+"PO-Revision-Date: 2026-06-01 00:00+0000\n"
+"Last-Translator: BlogLogistics <support@bloglogistics.com>\n"
+"Language-Team: BlogLogistics\n"
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Use the submenu items to manage BlogLogistics plugin settings."
+msgstr "サブメニュー項目を使用して BlogLogistics プラグインの設定を管理します。"
+
+msgid "Markdown for Agents"
+msgstr "エージェント向けMarkdown"
+
+msgid "This plugin provides a Markdown-friendly homepage for agents, tools, and other clients that prefer machine-readable content."
+msgstr "このプラグインは、機械可読コンテンツを必要とするエージェント、ツール、その他のクライアント向けに Markdown 対応のホームページを提供します。"
+
+msgid "Settings saved."
+msgstr "設定を保存しました。"
+
+msgid "Recommended defaults restored."
+msgstr "推奨既定値を復元しました。"
+
+msgid "Enable Markdown homepage"
+msgstr "Markdown ホームページを有効化"
+
+msgid "Creates a Markdown version of the homepage at /index.md."
+msgstr "/index.md にホームページの Markdown 版を作成します。"
+
+msgid "Support Markdown requests for the homepage"
+msgstr "ホームページの Markdown リクエストに対応"
+
+msgid "Returns Markdown when the homepage is requested by software that asks for text/markdown."
+msgstr "text/markdown を要求するソフトウェアからホームページがリクエストされた場合に Markdown を返します。"
+
+msgid "Add discovery headers"
+msgstr "検出ヘッダーを追加"
+
+msgid "Adds headers that tell agents where to find the Markdown homepage, canonical homepage, and sitemap."
+msgstr "Markdown ホームページ、正規ホームページ、サイトマップの場所をエージェントに伝えるヘッダーを追加します。"
+
+msgid "Include homepage content"
+msgstr "ホームページコンテンツを含める"
+
+msgid "Adds the published homepage content to the Markdown output."
+msgstr "公開済みのホームページコンテンツを Markdown 出力に追加します。"
+
+msgid "Include important pages"
+msgstr "重要なページを含める"
+
+msgid "Lists published pages in the Markdown output."
+msgstr "公開済みページを Markdown 出力に一覧表示します。"
+
+msgid "Maximum number of pages to list"
+msgstr "一覧表示するページの最大数"
+
+msgid "Default is 20. Allowed range is 1 to 100."
+msgstr "既定値は 20 です。許可範囲は 1 から 100 です。"
+
+msgid "Include machine-readable access links"
+msgstr "機械可読アクセスリンクを含める"
+
+msgid "Adds links for the homepage, Markdown homepage, sitemap, and robots policy."
+msgstr "ホームページ、Markdown ホームページ、サイトマップ、robots ポリシーへのリンクを追加します。"
+
+msgid "Include website-use preferences from robots.txt"
+msgstr "robots.txt からウェブサイト利用設定を含める"
+
+msgid "Shows the current Content-Signal preference from robots.txt when available. If the BlogLogistics robots.txt plugin manages that line, this plugin follows the value already published there instead of creating a separate setting."
+msgstr "利用可能な場合、robots.txt の現在の Content-Signal 設定を表示します。BlogLogistics robots.txt プラグインがその行を管理している場合、このプラグインは別の設定を作成せず、そこで公開済みの値に従います。"
+
+msgid "Recommended defaults"
+msgstr "推奨既定値"
+
+msgid "The recommended defaults keep all Markdown agent features turned on, list up to 20 pages, and follow the website-use preference already published in robots.txt."
+msgstr "推奨既定値では、すべての Markdown エージェント機能を有効にし、最大 20 ページを一覧表示し、robots.txt で既に公開されているウェブサイト利用設定に従います。"
+
+msgid "Save Settings"
+msgstr "設定を保存"
+
+msgid "Restore recommended defaults"
+msgstr "推奨既定値を復元"
+
+msgid "You do not have permission to access this page."
+msgstr "このページにアクセスする権限がありません。"
+
+msgid "You do not have permission to save these settings."
+msgstr "これらの設定を保存する権限がありません。"
+
+msgid "You do not have permission to restore these settings."
+msgstr "これらの設定を復元する権限がありません。"
+
+msgid "Homepage Content"
+msgstr "ホームページコンテンツ"
+
+msgid "Important Pages"
+msgstr "重要なページ"
+
+msgid "Machine-readable Access"
+msgstr "機械可読アクセス"
+
+msgid "Homepage"
+msgstr "ホームページ"
+
+msgid "Markdown homepage"
+msgstr "Markdown ホームページ"
+
+msgid "Sitemap"
+msgstr "サイトマップ"
+
+msgid "Robots policy"
+msgstr "robots ポリシー"

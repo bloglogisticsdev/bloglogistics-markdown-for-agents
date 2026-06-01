@@ -1,0 +1,117 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: BlogLogistics Markdown for Agents 1.3.0\n"
+"Report-Msgid-Bugs-To: https://www.bloglogistics.com\n"
+"POT-Creation-Date: 2026-06-01 00:00+0000\n"
+"PO-Revision-Date: 2026-06-01 00:00+0000\n"
+"Last-Translator: BlogLogistics <support@bloglogistics.com>\n"
+"Language-Team: BlogLogistics\n"
+"Language: fr_FR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Use the submenu items to manage BlogLogistics plugin settings."
+msgstr "Utilisez les éléments du sous-menu pour gérer les réglages des extensions BlogLogistics."
+
+msgid "Markdown for Agents"
+msgstr "Markdown pour agents"
+
+msgid "This plugin provides a Markdown-friendly homepage for agents, tools, and other clients that prefer machine-readable content."
+msgstr "Cette extension fournit une page d’accueil compatible Markdown pour les agents, les outils et les autres clients qui préfèrent du contenu lisible par machine."
+
+msgid "Settings saved."
+msgstr "Réglages enregistrés."
+
+msgid "Recommended defaults restored."
+msgstr "Réglages recommandés restaurés."
+
+msgid "Enable Markdown homepage"
+msgstr "Activer la page d’accueil Markdown"
+
+msgid "Creates a Markdown version of the homepage at /index.md."
+msgstr "Crée une version Markdown de la page d’accueil à /index.md."
+
+msgid "Support Markdown requests for the homepage"
+msgstr "Prendre en charge les demandes Markdown pour la page d’accueil"
+
+msgid "Returns Markdown when the homepage is requested by software that asks for text/markdown."
+msgstr "Renvoie du Markdown lorsque la page d’accueil est demandée par un logiciel qui demande text/markdown."
+
+msgid "Add discovery headers"
+msgstr "Ajouter les en-têtes de découverte"
+
+msgid "Adds headers that tell agents where to find the Markdown homepage, canonical homepage, and sitemap."
+msgstr "Ajoute des en-têtes indiquant aux agents où trouver la page d’accueil Markdown, la page canonique et le plan du site."
+
+msgid "Include homepage content"
+msgstr "Inclure le contenu de la page d’accueil"
+
+msgid "Adds the published homepage content to the Markdown output."
+msgstr "Ajoute le contenu publié de la page d’accueil à la sortie Markdown."
+
+msgid "Include important pages"
+msgstr "Inclure les pages importantes"
+
+msgid "Lists published pages in the Markdown output."
+msgstr "Liste les pages publiées dans la sortie Markdown."
+
+msgid "Maximum number of pages to list"
+msgstr "Nombre maximal de pages à lister"
+
+msgid "Default is 20. Allowed range is 1 to 100."
+msgstr "La valeur par défaut est 20. La plage autorisée est de 1 à 100."
+
+msgid "Include machine-readable access links"
+msgstr "Inclure les liens d’accès lisibles par machine"
+
+msgid "Adds links for the homepage, Markdown homepage, sitemap, and robots policy."
+msgstr "Ajoute des liens vers la page d’accueil, la page Markdown, le plan du site et la politique robots."
+
+msgid "Include website-use preferences from robots.txt"
+msgstr "Inclure les préférences d’utilisation du site depuis robots.txt"
+
+msgid "Shows the current Content-Signal preference from robots.txt when available. If the BlogLogistics robots.txt plugin manages that line, this plugin follows the value already published there instead of creating a separate setting."
+msgstr "Affiche la préférence Content-Signal actuelle depuis robots.txt lorsqu’elle est disponible. Si l’extension BlogLogistics robots.txt gère cette ligne, cette extension suit la valeur déjà publiée au lieu de créer un réglage séparé."
+
+msgid "Recommended defaults"
+msgstr "Réglages recommandés"
+
+msgid "The recommended defaults keep all Markdown agent features turned on, list up to 20 pages, and follow the website-use preference already published in robots.txt."
+msgstr "Les réglages recommandés gardent toutes les fonctions Markdown pour agents activées, listent jusqu’à 20 pages et suivent la préférence d’utilisation du site déjà publiée dans robots.txt."
+
+msgid "Save Settings"
+msgstr "Enregistrer les réglages"
+
+msgid "Restore recommended defaults"
+msgstr "Restaurer les réglages recommandés"
+
+msgid "You do not have permission to access this page."
+msgstr "Vous n’avez pas l’autorisation d’accéder à cette page."
+
+msgid "You do not have permission to save these settings."
+msgstr "Vous n’avez pas l’autorisation d’enregistrer ces réglages."
+
+msgid "You do not have permission to restore these settings."
+msgstr "Vous n’avez pas l’autorisation de restaurer ces réglages."
+
+msgid "Homepage Content"
+msgstr "Contenu de la page d’accueil"
+
+msgid "Important Pages"
+msgstr "Pages importantes"
+
+msgid "Machine-readable Access"
+msgstr "Accès lisible par machine"
+
+msgid "Homepage"
+msgstr "Page d’accueil"
+
+msgid "Markdown homepage"
+msgstr "Page d’accueil Markdown"
+
+msgid "Sitemap"
+msgstr "Plan du site"
+
+msgid "Robots policy"
+msgstr "Politique robots"

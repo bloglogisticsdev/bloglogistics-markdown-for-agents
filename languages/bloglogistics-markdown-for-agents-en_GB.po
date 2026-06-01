@@ -1,0 +1,117 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: BlogLogistics Markdown for Agents 1.3.0\n"
+"Report-Msgid-Bugs-To: https://www.bloglogistics.com\n"
+"POT-Creation-Date: 2026-06-01 00:00+0000\n"
+"PO-Revision-Date: 2026-06-01 00:00+0000\n"
+"Last-Translator: BlogLogistics <support@bloglogistics.com>\n"
+"Language-Team: BlogLogistics\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Use the submenu items to manage BlogLogistics plugin settings."
+msgstr "Use the submenu items to manage BlogLogistics plugin settings."
+
+msgid "Markdown for Agents"
+msgstr "Markdown for Agents"
+
+msgid "This plugin provides a Markdown-friendly homepage for agents, tools, and other clients that prefer machine-readable content."
+msgstr "This plugin provides a Markdown-friendly homepage for agents, tools, and other clients that prefer machine-readable content."
+
+msgid "Settings saved."
+msgstr "Settings saved."
+
+msgid "Recommended defaults restored."
+msgstr "Recommended defaults restored."
+
+msgid "Enable Markdown homepage"
+msgstr "Enable Markdown homepage"
+
+msgid "Creates a Markdown version of the homepage at /index.md."
+msgstr "Creates a Markdown version of the homepage at /index.md."
+
+msgid "Support Markdown requests for the homepage"
+msgstr "Support Markdown requests for the homepage"
+
+msgid "Returns Markdown when the homepage is requested by software that asks for text/markdown."
+msgstr "Returns Markdown when the homepage is requested by software that asks for text/markdown."
+
+msgid "Add discovery headers"
+msgstr "Add discovery headers"
+
+msgid "Adds headers that tell agents where to find the Markdown homepage, canonical homepage, and sitemap."
+msgstr "Adds headers that tell agents where to find the Markdown homepage, canonical homepage, and sitemap."
+
+msgid "Include homepage content"
+msgstr "Include homepage content"
+
+msgid "Adds the published homepage content to the Markdown output."
+msgstr "Adds the published homepage content to the Markdown output."
+
+msgid "Include important pages"
+msgstr "Include important pages"
+
+msgid "Lists published pages in the Markdown output."
+msgstr "Lists published pages in the Markdown output."
+
+msgid "Maximum number of pages to list"
+msgstr "Maximum number of pages to list"
+
+msgid "Default is 20. Allowed range is 1 to 100."
+msgstr "Default is 20. Allowed range is 1 to 100."
+
+msgid "Include machine-readable access links"
+msgstr "Include machine-readable access links"
+
+msgid "Adds links for the homepage, Markdown homepage, sitemap, and robots policy."
+msgstr "Adds links for the homepage, Markdown homepage, sitemap, and robots policy."
+
+msgid "Include website-use preferences from robots.txt"
+msgstr "Include website-use preferences from robots.txt"
+
+msgid "Shows the current Content-Signal preference from robots.txt when available. If the BlogLogistics robots.txt plugin manages that line, this plugin follows the value already published there instead of creating a separate setting."
+msgstr "Shows the current Content-Signal preference from robots.txt when available. If the BlogLogistics robots.txt plugin manages that line, this plugin follows the value already published there instead of creating a separate setting."
+
+msgid "Recommended defaults"
+msgstr "Recommended defaults"
+
+msgid "The recommended defaults keep all Markdown agent features turned on, list up to 20 pages, and follow the website-use preference already published in robots.txt."
+msgstr "The recommended defaults keep all Markdown agent features turned on, list up to 20 pages, and follow the website-use preference already published in robots.txt."
+
+msgid "Save Settings"
+msgstr "Save Settings"
+
+msgid "Restore recommended defaults"
+msgstr "Restore recommended defaults"
+
+msgid "You do not have permission to access this page."
+msgstr "You do not have permission to access this page."
+
+msgid "You do not have permission to save these settings."
+msgstr "You do not have permission to save these settings."
+
+msgid "You do not have permission to restore these settings."
+msgstr "You do not have permission to restore these settings."
+
+msgid "Homepage Content"
+msgstr "Homepage Content"
+
+msgid "Important Pages"
+msgstr "Important Pages"
+
+msgid "Machine-readable Access"
+msgstr "Machine-readable Access"
+
+msgid "Homepage"
+msgstr "Homepage"
+
+msgid "Markdown homepage"
+msgstr "Markdown homepage"
+
+msgid "Sitemap"
+msgstr "Sitemap"
+
+msgid "Robots policy"
+msgstr "Robots policy"

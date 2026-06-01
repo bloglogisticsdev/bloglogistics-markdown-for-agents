@@ -1,0 +1,117 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: BlogLogistics Markdown for Agents 1.3.0\n"
+"Report-Msgid-Bugs-To: https://www.bloglogistics.com\n"
+"POT-Creation-Date: 2026-06-01 00:00+0000\n"
+"PO-Revision-Date: 2026-06-01 00:00+0000\n"
+"Last-Translator: BlogLogistics <support@bloglogistics.com>\n"
+"Language-Team: BlogLogistics\n"
+"Language: sv_SE\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Use the submenu items to manage BlogLogistics plugin settings."
+msgstr "Använd undermenyalternativen för att hantera inställningar för BlogLogistics-tillägg."
+
+msgid "Markdown for Agents"
+msgstr "Markdown för agenter"
+
+msgid "This plugin provides a Markdown-friendly homepage for agents, tools, and other clients that prefer machine-readable content."
+msgstr "Detta tillägg tillhandahåller en Markdown-vänlig startsida för agenter, verktyg och andra klienter som föredrar maskinläsbart innehåll."
+
+msgid "Settings saved."
+msgstr "Inställningar sparade."
+
+msgid "Recommended defaults restored."
+msgstr "Rekommenderade standardvärden återställda."
+
+msgid "Enable Markdown homepage"
+msgstr "Aktivera Markdown-startsida"
+
+msgid "Creates a Markdown version of the homepage at /index.md."
+msgstr "Skapar en Markdown-version av startsidan på /index.md."
+
+msgid "Support Markdown requests for the homepage"
+msgstr "Stöd Markdown-begäranden för startsidan"
+
+msgid "Returns Markdown when the homepage is requested by software that asks for text/markdown."
+msgstr "Returnerar Markdown när startsidan begärs av programvara som ber om text/markdown."
+
+msgid "Add discovery headers"
+msgstr "Lägg till upptäcktsrubriker"
+
+msgid "Adds headers that tell agents where to find the Markdown homepage, canonical homepage, and sitemap."
+msgstr "Lägger till rubriker som talar om för agenter var Markdown-startsidan, den kanoniska startsidan och webbplatskartan finns."
+
+msgid "Include homepage content"
+msgstr "Inkludera startsidans innehåll"
+
+msgid "Adds the published homepage content to the Markdown output."
+msgstr "Lägger till publicerat startsidesinnehåll i Markdown-utdata."
+
+msgid "Include important pages"
+msgstr "Inkludera viktiga sidor"
+
+msgid "Lists published pages in the Markdown output."
+msgstr "Listar publicerade sidor i Markdown-utdata."
+
+msgid "Maximum number of pages to list"
+msgstr "Maximalt antal sidor att lista"
+
+msgid "Default is 20. Allowed range is 1 to 100."
+msgstr "Standard är 20. Tillåtet intervall är 1 till 100."
+
+msgid "Include machine-readable access links"
+msgstr "Inkludera maskinläsbara åtkomstlänkar"
+
+msgid "Adds links for the homepage, Markdown homepage, sitemap, and robots policy."
+msgstr "Lägger till länkar för startsidan, Markdown-startsidan, webbplatskartan och robots-policyn."
+
+msgid "Include website-use preferences from robots.txt"
+msgstr "Inkludera preferenser för webbplatsanvändning från robots.txt"
+
+msgid "Shows the current Content-Signal preference from robots.txt when available. If the BlogLogistics robots.txt plugin manages that line, this plugin follows the value already published there instead of creating a separate setting."
+msgstr "Visar aktuell Content-Signal-preferens från robots.txt när den är tillgänglig. Om BlogLogistics robots.txt-tillägg hanterar den raden följer detta tillägg värdet som redan publicerats där i stället för att skapa en separat inställning."
+
+msgid "Recommended defaults"
+msgstr "Rekommenderade standardvärden"
+
+msgid "The recommended defaults keep all Markdown agent features turned on, list up to 20 pages, and follow the website-use preference already published in robots.txt."
+msgstr "De rekommenderade standardvärdena håller alla Markdown-agentfunktioner aktiverade, listar upp till 20 sidor och följer webbplatsens användningspreferens som redan publicerats i robots.txt."
+
+msgid "Save Settings"
+msgstr "Spara inställningar"
+
+msgid "Restore recommended defaults"
+msgstr "Återställ rekommenderade standardvärden"
+
+msgid "You do not have permission to access this page."
+msgstr "Du har inte behörighet att komma åt den här sidan."
+
+msgid "You do not have permission to save these settings."
+msgstr "Du har inte behörighet att spara dessa inställningar."
+
+msgid "You do not have permission to restore these settings."
+msgstr "Du har inte behörighet att återställa dessa inställningar."
+
+msgid "Homepage Content"
+msgstr "Startsidans innehåll"
+
+msgid "Important Pages"
+msgstr "Viktiga sidor"
+
+msgid "Machine-readable Access"
+msgstr "Maskinläsbar åtkomst"
+
+msgid "Homepage"
+msgstr "Startsida"
+
+msgid "Markdown homepage"
+msgstr "Markdown-startsida"
+
+msgid "Sitemap"
+msgstr "Webbplatskarta"
+
+msgid "Robots policy"
+msgstr "Robots-policy"

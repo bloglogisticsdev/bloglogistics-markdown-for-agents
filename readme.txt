@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, content negotiation
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -50,6 +50,14 @@ The recommended defaults keep the Markdown homepage, Markdown content negotiatio
 The plugin removes its saved settings and version option. It does not delete pages, posts, or content.
 
 == Changelog ==
+
+= 1.3.0 =
+* Refactor the main plugin file into a bootstrap loader.
+* Move the main plugin class into the includes directory.
+* Add translation support and bundled language files.
+* Add language files for English Australia, English Great Britain, French, German, Spanish, Norwegian Bokmål, Swedish, and Japanese.
+* Add Domain Path metadata for bundled language files.
+* Preserve update metadata, including icons, banners, Installation, FAQ, Author, and changelog support.
 
 = 1.2.0 =
 * Add BlogLogistics > Markdown for Agents settings page.
