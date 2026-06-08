@@ -115,6 +115,102 @@ jobs:
 
           changelog_html = "".join(html_parts) if html_parts else "<p>No changelog available.</p>"
 
+          def extract_readme_section(readme_text, section_name):
+              match = re.search(
+                  rf"^==\s*{re.escape(section_name)}\s*==\s*(.*?)(?=^==\s+|\Z)",
+                  readme_text,
+                  flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+              )
+              return match.group(1).strip() if match else ""
+
+          def convert_readme_section_to_html(section_text):
+              html_output = []
+              list_items = []
+
+              def flush_list():
+                  if list_items:
+                      html_output.append("<ol>")
+                      for item in list_items:
+                          html_output.append(f"<li>{html.escape(item)}</li>")
+                      html_output.append("</ol>")
+                      list_items.clear()
+
+              paragraph_lines = []
+
+              def flush_paragraph():
+                  if paragraph_lines:
+                      html_output.append(f"<p>{html.escape(' '.join(paragraph_lines))}</p>")
+                      paragraph_lines.clear()
+
+              for raw_line in section_text.splitlines():
+                  line = raw_line.strip()
+
+                  if not line:
+                      flush_list()
+                      flush_paragraph()
+                      continue
+
+                  numbered_item = re.match(r"^\d+\.\s+(.*)$", line)
+                  if numbered_item:
+                      flush_paragraph()
+                      list_items.append(numbered_item.group(1).strip())
+                      continue
+
+                  bullet_item = re.match(r"^[*-]\s+(.*)$", line)
+                  if bullet_item:
+                      flush_paragraph()
+                      list_items.append(bullet_item.group(1).strip())
+                      continue
+
+                  flush_list()
+                  paragraph_lines.append(line)
+
+              flush_list()
+              flush_paragraph()
+
+              return "".join(html_output) if html_output else "<p>No information available.</p>"
+
+          def convert_faq_to_html(faq_text):
+              html_output = []
+              current_question = None
+              current_answer = []
+
+              def flush_question():
+                  nonlocal current_question, current_answer
+
+                  if not current_question:
+                      return
+
+                  answer = " ".join(line.strip() for line in current_answer if line.strip())
+                  html_output.append(f"<h4>{html.escape(current_question)}</h4>")
+                  html_output.append(f"<p>{html.escape(answer)}</p>" if answer else "<p></p>")
+                  current_question = None
+                  current_answer = []
+
+              for raw_line in faq_text.splitlines():
+                  line = raw_line.strip()
+
+                  if not line:
+                      continue
+
+                  question = re.match(r"^=\s*(.*?)\s*=$", line)
+                  if question:
+                      flush_question()
+                      current_question = question.group(1).strip()
+                      current_answer = []
+                      continue
+
+                  current_answer.append(line)
+
+              flush_question()
+
+              return "".join(html_output) if html_output else "<p>No FAQ available.</p>"
+
+          installation_text = extract_readme_section(readme, "Installation")
+          faq_text = extract_readme_section(readme, "Frequently Asked Questions")
+          installation_html = convert_readme_section_to_html(installation_text)
+          faq_html = convert_faq_to_html(faq_text)
+
           manifest = {
               "name": plugin_name,
               "version": version,
@@ -138,8 +234,8 @@ jobs:
               },
               "sections": {
                   "description": "Adds configurable Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.",
-                  "installation": "<ol><li>Upload the plugin folder to /wp-content/plugins/.</li><li>Activate the plugin in WordPress.</li><li>Go to BlogLogistics &gt; Markdown for Agents to review or change the recommended settings.</li><li>Visit /index.md on the site to confirm the Markdown endpoint works.</li><li>Request the homepage with an Accept: text/markdown header to confirm Markdown content negotiation works.</li></ol>",
-                  "faq": "<h4>What does this plugin do?</h4><p>It adds a Markdown-friendly version of the site's homepage at /index.md and can return Markdown when the homepage is requested by software that prefers text/markdown.</p><h4>Where are the settings?</h4><p>The settings are available under BlogLogistics &gt; Markdown for Agents.</p><h4>Does this replace the normal website homepage?</h4><p>No. Normal visitors continue to see the regular HTML homepage. The Markdown output is available for agents, tools, and other clients that request it.</p><h4>Does this create or edit WordPress pages?</h4><p>No. The plugin serves Markdown output dynamically using the current site's public URLs and metadata.</p><h4>Does this plugin manage robots.txt or AI training preferences?</h4><p>No. This plugin does not edit robots.txt. When the Markdown output includes website-use preferences, it reads the current Content-Signal value from the physical robots.txt file when available. This keeps it aligned with BlogLogistics Content Signals for Robots.txt instead of creating a second conflicting setting.</p><h4>What happens when the plugin is deleted?</h4><p>The plugin removes its saved settings and version option. It does not delete pages, posts, or content.</p>",
+                  "installation": installation_html,
+                  "faq": faq_html,
                   "changelog": changelog_html,
               },
           }

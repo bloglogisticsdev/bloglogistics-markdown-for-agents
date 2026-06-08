@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, content negotiation
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 1.3.1
+Stable tag: 1.3.2
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -61,6 +61,11 @@ The plugin removes its saved settings and version option. It does not delete pag
 This plugin is licensed under GPL-3.0-or-later. BlogLogistics service use, support, updates, configuration assistance, or replacement work may require an active BlogLogistics hosting, maintenance, or site-management service, or a separate agreement. This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 1.3.2 =
+* Generate the update manifest Installation section from readme.txt.
+* Generate the update manifest FAQ section from readme.txt.
+* Remove stale hard-coded Installation and FAQ manifest content.
 
 = 1.3.0 =
 * Refactor the main plugin file into a bootstrap loader.
