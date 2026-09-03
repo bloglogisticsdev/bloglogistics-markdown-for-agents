@@ -1,110 +1,32 @@
-=== BlogLogistics Markdown for Agents ===
-Contributors: bloglogistics
-Tags: markdown, ai, agents, content negotiation
-Requires at least: 7.0
-Tested up to: 7.0
-Requires PHP: 8.3
-Stable tag: 1.3.2
-License: GPL-3.0-or-later
-License URI: https://www.gnu.org/licenses/gpl-3.0.html
+# BlogLogistics Markdown for Agents
 
-Adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md.
+BlogLogistics Markdown for Agents advertises user-curated Markdown companion files and `llms.txt` for AI agents without generating Markdown or checking the filesystem on public page loads.
 
-== Description ==
+## Philosophy
 
-BlogLogistics Markdown for Agents adds Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.
+The plugin deliberately keeps editorial control with the site owner. It does not create, rewrite, or curate `llms.txt`, `/index.md`, or any `/path/index.md` file.
 
-== Installation ==
+Users create those files themselves. The plugin only discovers them during an explicit administrator-run scan, records the relationship in WordPress post metadata, and advertises eligible files on the corresponding HTML page.
 
-1. Upload the plugin folder to /wp-content/plugins/.
-2. Activate the plugin in WordPress.
-3. Go to BlogLogistics > Markdown for Agents to review or change the recommended settings.
-4. Visit /index.md on the site to confirm the Markdown endpoint works.
-5. Request the homepage with an Accept: text/markdown header to confirm Markdown content negotiation works.
+## Workflow
 
-== BlogLogistics Service Usage Notice ==
+1. Create a curated `/llms.txt`.
+2. Create any Markdown companion files you want, for example `/about-us/index.md`.
+3. In WordPress, open **BlogLogistics > Markdown for Agents**.
+4. Click **Scan for Markdown Files**.
+5. Review detected companions and disable discovery for any specific page or post if required.
+6. Purge page/CDN caches after changes.
 
-This plugin is licensed under GPL-3.0-or-later.
+## Performance
 
-This plugin is provided by BlogLogistics as part of an active hosting, maintenance, or site-management service, unless a separate service arrangement has been granted. If the website is moved to another provider, continued BlogLogistics service use, support, updates, configuration assistance, or replacement work may require a separate agreement.
+Public requests do not scan directories, call `file_exists()`, probe Markdown URLs, make external requests, or generate Markdown.
 
-This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
+The scan stores a matching companion URL in the `bloglogistics_markdown_url` custom field. The front end uses the stored WordPress metadata and outputs discovery markup once when appropriate.
 
-== Frequently Asked Questions ==
+## Per-page control
 
-= What does this plugin do? =
-It adds a Markdown-friendly version of the site's homepage at /index.md and can return Markdown when the homepage is requested by software that prefers text/markdown.
+A page or post can be excluded even if its Markdown companion exists. The setting is available both in the WordPress editor and on the central BlogLogistics > Markdown for Agents screen.
 
-= Does this replace the normal website homepage? =
-No. Normal visitors continue to see the regular HTML homepage. The Markdown output is available for agents, tools, and other clients that request it.
+## Licence
 
-= Does this create or edit WordPress pages? =
-No. The plugin serves Markdown output dynamically using the current site's public URLs and metadata.
-
-= Where is the Markdown version of the homepage? =
-The Markdown version is available at /index.md.
-
-= Does this plugin manage robots.txt or AI training preferences? =
-No. This plugin does not edit robots.txt. When the Markdown output includes website-use preferences, it reads the current Content-Signal value from the physical robots.txt file when available. This keeps it aligned with BlogLogistics Content Signals for Robots.txt instead of creating a second conflicting setting.
-
-= Where are the settings? =
-The settings are available under BlogLogistics > Markdown for Agents.
-
-= What are the recommended defaults? =
-The recommended defaults keep the Markdown homepage, Markdown content negotiation, discovery headers, homepage content, important pages, machine-readable access links, and robots.txt website-use preferences enabled.
-
-= What happens when the plugin is deleted? =
-The plugin removes its saved settings and version option. It does not delete pages, posts, or content.
-
-= Does this plugin continue to be covered by BlogLogistics service terms if the website moves to another provider? =
-
-This plugin is licensed under GPL-3.0-or-later. BlogLogistics service use, support, updates, configuration assistance, or replacement work may require an active BlogLogistics hosting, maintenance, or site-management service, or a separate agreement. This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
-
-== Changelog ==
-
-= 1.3.2 =
-* Generate the update manifest Installation section from readme.txt.
-* Generate the update manifest FAQ section from readme.txt.
-* Remove stale hard-coded Installation and FAQ manifest content.
-
-= 1.3.0 =
-* Refactor the main plugin file into a bootstrap loader.
-* Move the main plugin class into the includes directory.
-* Add translation support and bundled language files.
-* Add language files for English Australia, English Great Britain, French, German, Spanish, Norwegian Bokmål, Swedish, and Japanese.
-* Add Domain Path metadata for bundled language files.
-* Preserve update metadata, including icons, banners, Installation, FAQ, Author, and changelog support.
-
-= 1.2.0 =
-* Add BlogLogistics > Markdown for Agents settings page.
-* Add configurable options for the Markdown homepage, content negotiation, discovery headers, homepage content, important pages, access links, and website-use preferences.
-* Read the Content-Signal value from robots.txt when available so the Markdown output stays aligned with BlogLogistics Content Signals for Robots.txt.
-* Add uninstall cleanup for this plugin’s saved settings.
-
-= 1.1.10 =
-* Add Installation and FAQ tabs plus linked BlogLogistics author metadata to the plugin details modal.
-
-= 1.1.9 =
-* Add BlogLogistics plugin banner assets and update manifest banner metadata.
-
-= 1.1.8 =
-* Add BlogLogistics plugin icon assets and update manifest icon metadata.
-
-= 1.1.7 =
-* Generate the update manifest changelog from readme.txt so WordPress displays the full changelog.
-
-= 1.1.6 =
-* Automate update manifest generation and upload from GitHub Actions.
-
-= 1.1.5 =
-* Fix manifest updater initialization so WordPress shows update controls after installation.
-* Add missing update manifest URL constant.
-
-= 1.1.2 =
-* Fix GitHub updater class name to prevent conflicts with other BlogLogistics plugins.
-
-= 1.1.1 =
-* Test GitHub release update detection.
-
-= 1.1.0 =
-* Initial GitHub-updatable test release.
+GPL-3.0-or-later.

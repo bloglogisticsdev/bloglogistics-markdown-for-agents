@@ -233,7 +233,7 @@ jobs:
                   "default": f"{icon_base_url}/banner-772x250.png",
               },
               "sections": {
-                  "description": "Adds configurable Markdown content negotiation for AI agents and serves a machine-readable homepage at /index.md using the current WordPress site's URLs and metadata.",
+                  "description": "Advertises user-curated Markdown companion files and llms.txt for AI agents without generating Markdown or checking the filesystem on public page loads.",
                   "installation": installation_html,
                   "faq": faq_html,
                   "changelog": changelog_html,
