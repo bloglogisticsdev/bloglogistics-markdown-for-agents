@@ -4,11 +4,11 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.2.0
+Stable tag: 2.3.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Advertises and validates user-curated Markdown companion files and llms.txt for AI agents, with admin health checks and safe .htaccess compatibility.
+Advertises, validates, and live-verifies user-curated Markdown companion files and llms.txt, with admin health checks and safe .htaccess compatibility.
 
 == Description ==
 
@@ -23,7 +23,7 @@ Typical file locations are:
 * `/notes/index.md` for `/notes/`.
 * `/llms.txt` for the site's curated LLM guidance file.
 
-An administrator explicitly runs a scan after Markdown files are added, removed, or moved. The scan checks the filesystem and stores each detected Markdown URL in the WordPress custom field `bloglogistics_markdown_url`.
+An administrator explicitly runs a scan after Markdown files are added, removed, or moved. The scan checks the filesystem and stores each detected Markdown URL in the WordPress custom field `bloglogistics_markdown_url`. Version 2.3.0 makes this scan incremental by reusing previous encoding-validation results for unchanged companions while still checking file existence, timestamps, and sizes.
 
 Normal public page loads do not scan directories, check for files, probe URLs, generate Markdown, or make external requests. The plugin uses the already-stored WordPress metadata and outputs discovery markup once for eligible pages.
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 adds an administrator-only Markdown Health Dashboard. Each manual scan now checks whether companions are present, compares WordPress modification times with Markdown file timestamps to flag potentially stale companions, validates UTF-8 encoding and common mojibake patterns, and validates the user-managed `llms.txt` file and its local Markdown references. These checks do not run on public page loads and do not modify any Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extends it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. These checks do not run on normal public page loads and do not modify Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -51,10 +51,12 @@ Those files remain entirely under the site owner's control. This is intentional 
 2. Activate BlogLogistics Markdown for Agents.
 3. Create and upload your curated `llms.txt` and Markdown companion files.
 4. Go to BlogLogistics > Markdown for Agents.
-5. Click **Scan for Markdown Files and Refresh Health**. The scan detects companion files, refreshes the Markdown Health Dashboard, validates encoding and llms.txt references, verifies the `.htaccess` compatibility rule, and runs a live coexistence check when a suitable Markdown companion is available.
-6. Review the health results and detected Markdown companions, then optionally disable discovery for specific posts or pages.
-7. If needed, use **Install / Repair and Verify .htaccess Rule** on the same screen.
-8. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
+5. Click **Scan Changes and Refresh Health**. The incremental scan detects companion files, refreshes the Markdown Health Dashboard, validates changed files and llms.txt references, and reuses unchanged encoding-validation results.
+6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
+7. Use **Run Live Endpoint Verification** to check public HTTP status, redirects, Markdown MIME type, and discovery markup.
+8. Review detected companions and use individual or bulk controls to enable or disable discovery, force selected revalidation, or live-verify selected items.
+9. If needed, use **Install / Repair and Verify .htaccess Rule** and review server compatibility and backup status on the same screen.
+10. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
 
 == Frequently Asked Questions ==
 
@@ -77,7 +79,25 @@ If the WordPress post or page was modified more than 60 seconds after the Markdo
 It checks that llms.txt exists and is readable, validates UTF-8 encoding, reports common encoding corruption, checks for a recommended H1 heading, detects duplicate links, and verifies same-site Markdown links against local files. External links are not requested.
 
 = Does the health scan make external HTTP requests? =
-The Markdown and llms.txt health checks read local files only. The existing .htaccess coexistence verification can make a public request to the site's own WordPress page and Markdown companion when a suitable companion is available.
+The local Markdown and llms.txt health scan reads local files only. Live Endpoint Verification is a separate administrator action that makes same-site HTTP requests to verify public delivery. The existing .htaccess coexistence verification can also make a same-site request when a suitable companion is available.
+
+= What does Live Endpoint Verification check? =
+It checks the WordPress page and Markdown companion HTTP status, records redirects, checks the Markdown Content-Type response header, and verifies the expected rel="alternate" Markdown discovery link and llms.txt rel="describedby" link. Pages with discovery disabled are checked to confirm those plugin discovery links are absent.
+
+= What Markdown MIME type is preferred? =
+`text/markdown` is preferred. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. Other or missing content types are flagged for attention.
+
+= What does incremental scanning mean? =
+Every scan still checks expected file existence, timestamps, and sizes so additions and removals are detected. If a companion's scan signature is unchanged, the plugin reuses its previous encoding-validation result instead of reading and validating the full file again. Use **Force Full Rescan** to bypass that reuse.
+
+= What bulk actions are available? =
+For selected detected companions, administrators can enable discovery, disable discovery, force selected revalidation, or run live verification for the selected items.
+
+= What server diagnostics are shown? =
+The plugin reports the detected server family, whether Apache-compatible `.htaccess` automation is supported, `mod_rewrite` visibility when available, and whether the root `.htaccess` can be written. Nginx and IIS are reported as requiring manual server-level configuration.
+
+= How are old .htaccess backups managed? =
+The administrator screen lists timestamped backups created by this plugin. The cleanup action deletes only older plugin-created backups and always preserves the newest three.
 
 = What happens on a normal page load? =
 For a WordPress post or page with a recorded Markdown companion, the plugin reads the stored post metadata and outputs the discovery markup once. It performs no Markdown filesystem check and makes no external request.
@@ -127,6 +147,19 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.3.0 =
+* Add live endpoint verification for detected WordPress pages and Markdown companions.
+* Check live HTTP status codes and record whether page or Markdown endpoints redirect.
+* Check Markdown Content-Type headers, preferring `text/markdown` while reporting common legacy/plain-text types as warnings.
+* Verify live `rel="alternate"` Markdown discovery markup and `rel="describedby"` llms.txt discovery markup.
+* Verify that plugin discovery markup remains absent when a page's discovery setting is disabled.
+* Make local health scanning incremental by reusing encoding-validation results for unchanged companion files.
+* Add a **Force Full Rescan** action for administrators who want every companion re-read.
+* Add bulk actions to enable discovery, disable discovery, force selected revalidation, and live-verify selected companions.
+* Add server compatibility diagnostics for Apache, LiteSpeed, Nginx, IIS, `.htaccess` writability, and `mod_rewrite` visibility when available.
+* Add `.htaccess` backup management with safe cleanup that always preserves the newest three plugin-created backups.
+* Keep all new live verification and diagnostic work out of normal public page requests.
 
 = 2.2.0 =
 * Add an administrator-only Markdown Health Dashboard.

@@ -233,7 +233,7 @@ jobs:
                   "default": f"{icon_base_url}/banner-772x250.png",
               },
               "sections": {
-                  "description": "Advertises and validates user-curated Markdown companion files and llms.txt for AI agents, with admin health checks and safe .htaccess compatibility.",
+                  "description": "Advertises, validates, and live-verifies user-curated Markdown companion files and llms.txt, with admin health checks and safe .htaccess compatibility.",
                   "installation": installation_html,
                   "faq": faq_html,
                   "changelog": changelog_html,
