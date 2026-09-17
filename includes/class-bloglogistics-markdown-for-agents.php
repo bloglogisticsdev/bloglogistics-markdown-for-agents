@@ -315,21 +315,54 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
-     * Check whether the exact plugin block is present and, when WordPress uses
-     * its standard marker block, positioned before # BEGIN WordPress.
+     * Check whether the compatibility directives already exist anywhere in
+     * .htaccess. Comments, blank lines, and the plugin's banner text are not
+     * part of the test. This deliberately respects an equivalent rule that a
+     * site owner or another tool has already installed.
      */
-    private static function htaccess_rule_is_correctly_positioned( string $contents ): bool {
+    private static function htaccess_rule_exists( string $contents ): bool {
         $normalised = self::normalise_newlines( $contents );
-        $block      = self::htaccess_rule_block();
-        $rule_pos   = strpos( $normalised, $block );
+        $lines      = explode( "\n", $normalised );
+        $directives = [];
 
-        if ( false === $rule_pos ) {
-            return false;
+        foreach ( $lines as $line ) {
+            $line = trim( $line );
+
+            if ( '' === $line || str_starts_with( $line, '#' ) ) {
+                continue;
+            }
+
+            $directives[] = $line;
         }
 
-        $wp_pos = strpos( $normalised, '# BEGIN WordPress' );
+        $count = count( $directives );
 
-        return false === $wp_pos || $rule_pos < $wp_pos;
+        for ( $i = 0; $i <= $count - 3; $i++ ) {
+            $directory_condition = (bool) preg_match(
+                '~^RewriteCond\s+%\{REQUEST_FILENAME\}\s+-d(?:\s+\[[^\]]+\])?$~i',
+                $directives[ $i ]
+            );
+
+            if ( ! $directory_condition ) {
+                continue;
+            }
+
+            $markdown_condition = (bool) preg_match(
+                '~^RewriteCond\s+%\{REQUEST_FILENAME\}/index\.md\s+-f(?:\s+\[[^\]]+\])?$~i',
+                $directives[ $i + 1 ]
+            );
+
+            $wordpress_rule = (bool) preg_match(
+                '~^RewriteRule\s+\^\.\+/\?\$\s+/?index\.php\s+\[[^\]]*\bL\b[^\]]*\]$~i',
+                $directives[ $i + 2 ]
+            );
+
+            if ( $markdown_condition && $wordpress_rule ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -337,7 +370,7 @@ final class BL_Markdown_For_Agents {
      * .htaccess content more than necessary.
      */
     private static function build_htaccess_contents( string $contents ): string {
-        if ( self::htaccess_rule_is_correctly_positioned( $contents ) ) {
+        if ( self::htaccess_rule_exists( $contents ) ) {
             return $contents;
         }
 
@@ -636,7 +669,7 @@ final class BL_Markdown_For_Agents {
             $contents = $read;
         }
 
-        $needs_write = ! self::htaccess_rule_is_correctly_positioned( $contents );
+        $needs_write = ! self::htaccess_rule_exists( $contents );
 
         if ( $needs_write ) {
             if ( $exists && ! is_writable( $htaccess_file ) ) {
@@ -689,7 +722,7 @@ final class BL_Markdown_For_Agents {
 
         clearstatcache( true, $htaccess_file );
         $saved_contents = @file_get_contents( $htaccess_file );
-        $file_verified  = is_string( $saved_contents ) && self::htaccess_rule_is_correctly_positioned( $saved_contents );
+        $file_verified  = is_string( $saved_contents ) && self::htaccess_rule_exists( $saved_contents );
 
         if ( ! $file_verified ) {
             if ( $needs_write && $exists && '' !== $status['backup_file'] ) {
@@ -709,7 +742,7 @@ final class BL_Markdown_For_Agents {
         $status['state']         = $needs_write ? 'installed' : 'already_present';
         $status['message']       = $needs_write
             ? __( 'The Markdown companion compatibility rule was added to .htaccess and confirmed in the saved file.', 'bloglogistics-markdown-for-agents' )
-            : __( 'The Markdown companion compatibility rule is already present in the correct .htaccess position.', 'bloglogistics-markdown-for-agents' );
+            : __( 'An equivalent Markdown companion compatibility rule is already present in .htaccess. No changes were made.', 'bloglogistics-markdown-for-agents' );
 
         if ( $verify_live ) {
             $live = self::verify_htaccess_live();

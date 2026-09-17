@@ -28,7 +28,7 @@ The scan stores a matching companion URL in the `bloglogistics_markdown_url` cus
 
 A physical `/about-us/index.md` companion creates a real `/about-us/` directory. On Apache-compatible servers, that directory can prevent WordPress from receiving the normal `/about-us/` request and can produce a plain `Forbidden` response.
 
-Version 2.1.0 maintains this rule in the site's root `.htaccess` file:
+Version 2.1.1 maintains this rule in the site's root `.htaccess` file:
 
 ```apache
 # ======================================================================
@@ -45,7 +45,7 @@ Version 2.1.0 maintains this rule in the site's root `.htaccess` file:
 # ======================================================================
 ```
 
-If `# BEGIN WordPress` exists, the block is placed immediately before it. Otherwise it is placed at the top of the root `.htaccess` file. Before every write, the current file is backed up with a timestamped filename. The plugin then verifies the saved file and, when possible, performs an end-to-end HTTP check of one WordPress page and its Markdown companion.
+Before writing anything, the plugin checks for the equivalent three rewrite directives anywhere in the root `.htaccess` file. If they are already present, including a manually added copy with different comments, the plugin leaves `.htaccess` unchanged and does not create another backup. Only when the directives are absent does it insert the managed block immediately before `# BEGIN WordPress`, or at the top of `.htaccess` when that marker is not present. When a write is required, the existing file is backed up with a timestamped filename. The plugin then verifies the rule and, when possible, performs an end-to-end HTTP check of one WordPress page and its Markdown companion.
 
 The plugin does not remove this rule or its backups on uninstall because doing so while physical Markdown directories remain could immediately break the corresponding WordPress permalinks.
 

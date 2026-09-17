@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.1.0
+Stable tag: 2.1.1
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -27,7 +27,7 @@ An administrator explicitly runs a scan after Markdown files are added, removed,
 
 Normal public page loads do not scan directories, check for files, probe URLs, generate Markdown, or make external requests. The plugin uses the already-stored WordPress metadata and outputs discovery markup once for eligible pages.
 
-On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. Version 2.1.0 safely maintains a root `.htaccess` compatibility rule so the WordPress page and Markdown companion can coexist. Before every `.htaccess` write, the plugin creates a timestamped backup beside the live file. It then reads the file back to confirm the rule was saved and, when a non-homepage companion is available, performs an end-to-end HTTP check of both the WordPress page and its Markdown companion.
+On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. Version 2.1.1 safely maintains a root `.htaccess` compatibility rule so the WordPress page and Markdown companion can coexist. Before changing `.htaccess`, the plugin first checks for the equivalent rewrite directives anywhere in the file. If they already exist, including a manually added copy, the plugin leaves the file untouched. When a write is actually required, it creates a timestamped backup beside the live file, reads the file back to confirm the rule was saved, and, when a non-homepage companion is available, performs an end-to-end HTTP check of both the WordPress page and its Markdown companion.
 
 Pages that do not have a Markdown companion are automatically ignored.
 
@@ -84,10 +84,10 @@ A physical `/slug/index.md` file requires a real `/slug/` directory. On Apache-c
 Yes. Before every write to an existing `.htaccess` file, the plugin creates a timestamped backup beside it, for example `.htaccess.bloglogistics-mfa-backup-20260917-110301`. If the new file cannot be verified after writing, the plugin attempts to restore the original automatically.
 
 = Where is the compatibility rule inserted? =
-If the standard `# BEGIN WordPress` marker exists, the plugin inserts the rule immediately before that WordPress-managed block. If the marker does not exist, the rule is placed at the top of the site's root `.htaccess` file.
+Before writing anything, the plugin checks whether the equivalent rewrite directives already exist anywhere in `.htaccess`. If they do, the existing rule is respected and no duplicate is added. Only when no equivalent rule exists does the plugin insert its managed block immediately before `# BEGIN WordPress`, or at the top of the site's root `.htaccess` file when that marker is absent.
 
 = How does the plugin confirm the rule is live? =
-It first reads the saved `.htaccess` file back and confirms that the managed block is present in the correct position. When a detected non-homepage Markdown companion is available, it then requests both the WordPress page and its `/index.md` companion with a cache-busting query parameter. Both must return HTTP 200 for the live coexistence check to pass.
+It reads `.htaccess` and confirms that the required rewrite directives are present, whether they were installed by the plugin or already existed. When a detected non-homepage Markdown companion is available, it then requests both the WordPress page and its `/index.md` companion with a cache-busting query parameter. Both must return HTTP 200 for the live coexistence check to pass.
 
 = What happens on Nginx? =
 Nginx does not use `.htaccess`. The plugin does not attempt to create an Apache rule when the server clearly identifies itself as Nginx. The equivalent rewrite must be configured at the Nginx server level.
@@ -113,6 +113,12 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.1.1 =
+* Detect an equivalent Markdown companion rewrite rule anywhere in `.htaccess`, regardless of the surrounding comments or whether it was added manually.
+* Do not add, move, or duplicate the rule when the required directives already exist.
+* Do not create an unnecessary `.htaccess` backup when no file change is required.
+* Continue to run the live WordPress-page/Markdown-companion verification against an existing compatible rule.
 
 = 2.1.0 =
 * Add automatic `.htaccess` compatibility for physical `/slug/index.md` companion directories on Apache-compatible servers.
