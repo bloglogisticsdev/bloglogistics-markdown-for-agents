@@ -17,7 +17,7 @@ Users create those files themselves. The plugin discovers them during an adminis
 5. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 6. Use **Run Live Endpoint Verification** to check public HTTP status, redirects, Markdown MIME type, and discovery markup.
 7. Review detected companions and use individual or bulk controls to enable or disable discovery, force selected revalidation, or live-verify selected items.
-8. Review server compatibility and `.htaccess` backup status when the site uses Apache-compatible rules.
+8. Review server compatibility, Markdown MIME delivery, and `.htaccess` backup status when the site uses Apache-compatible rules.
 9. Purge page/CDN caches after changes that affect discovery markup or public file delivery.
 
 ## Markdown Health Dashboard
@@ -43,6 +43,21 @@ The stale-file indicator is deliberately labelled **possibly stale**. It compare
 Version 2.3.0 adds incremental validation. Every administrator scan still checks whether expected companion files exist and records their timestamp and size so additions and removals are detected. If a companion's relevant scan signature has not changed, the plugin reuses the previous encoding-validation result instead of reading and validating the full file again.
 
 A **Force Full Rescan** option is available for situations where timestamps cannot be trusted or the administrator wants every companion re-read.
+
+## Apache Markdown MIME handling
+
+Version 2.3.1 adds safe `.htaccess` management for Markdown delivery as well as permalink compatibility. On Apache-compatible servers the plugin checks for these MIME directives:
+
+```apache
+<IfModule mod_mime.c>
+    AddType text/markdown .md
+    AddCharset UTF-8 .md
+</IfModule>
+```
+
+Equivalent existing directives are detected regardless of surrounding comments or placement, including manually added rules. If the required `AddType` and `AddCharset` directives for `.md` are already present, the plugin does not add another copy, does not move them, and does not create an unnecessary backup.
+
+When either the permalink compatibility rule or the Markdown MIME rule is missing, the plugin creates one timestamped `.htaccess` backup, adds only the missing rule or rules before `# BEGIN WordPress` when available, reads the file back to verify both rules, and can confirm the result with a live Markdown request.
 
 ## Live endpoint verification
 

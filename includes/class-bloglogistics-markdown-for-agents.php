@@ -54,9 +54,9 @@ final class BL_Markdown_For_Agents {
     /**
      * Activation deliberately does not scan for curated Markdown files.
      *
-     * It does, however, install the .htaccess compatibility rule required for
-     * /slug/ WordPress permalinks to coexist with physical /slug/index.md files
-     * on Apache-compatible servers.
+     * It does, however, install the Apache-compatible .htaccess rules required
+     * for /slug/ WordPress permalinks to coexist with physical /slug/index.md
+     * files and for .md companions to be served as UTF-8 text/markdown.
      */
     public static function activate(): void {
         if ( false === get_option( self::LLMS_DETECTED_OPTION, false ) ) {
@@ -1041,6 +1041,7 @@ final class BL_Markdown_For_Agents {
         $public_root   = self::public_root();
         $htaccess_file = wp_normalize_path( $public_root . '.htaccess' );
         $mod_rewrite   = 'unknown';
+        $mod_mime      = 'unknown';
 
         if ( false !== strpos( $software_low, 'litespeed' ) ) {
             $server_type = 'litespeed';
@@ -1056,6 +1057,7 @@ final class BL_Markdown_For_Agents {
             $modules = apache_get_modules();
             if ( is_array( $modules ) ) {
                 $mod_rewrite = in_array( 'mod_rewrite', $modules, true ) ? 'enabled' : 'not_detected';
+                $mod_mime    = in_array( 'mod_mime', $modules, true ) ? 'enabled' : 'not_detected';
             }
         }
 
@@ -1064,6 +1066,7 @@ final class BL_Markdown_For_Agents {
             'server_type'           => $server_type,
             'supports_htaccess'     => self::server_supports_htaccess( $htaccess_file ),
             'mod_rewrite'           => $mod_rewrite,
+            'mod_mime'              => $mod_mime,
             'htaccess_exists'       => file_exists( $htaccess_file ),
             'htaccess_readable'     => is_readable( $htaccess_file ),
             'htaccess_writable'     => file_exists( $htaccess_file ) ? is_writable( $htaccess_file ) : is_writable( dirname( $htaccess_file ) ),
@@ -1169,6 +1172,26 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
+     * Return the exact Markdown MIME block managed by this plugin.
+     */
+    private static function htaccess_mime_rule_block(): string {
+        return implode(
+            "\n",
+            [
+                '# ======================================================================',
+                '# Serve Markdown companion files with the correct MIME type',
+                '# Added by the plugin: BlogLogistics Markdown for Agents',
+                '# ======================================================================',
+                '<IfModule mod_mime.c>',
+                '    AddType text/markdown .md',
+                '    AddCharset UTF-8 .md',
+                '</IfModule>',
+                '# ======================================================================',
+            ]
+        );
+    }
+
+    /**
      * Determine whether the current server is expected to honour .htaccess.
      */
     private static function server_supports_htaccess( string $htaccess_file ): bool {
@@ -1252,38 +1275,82 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
-     * Insert or reposition the managed rule without altering the surrounding
-     * .htaccess content more than necessary.
+     * Check whether the required Markdown MIME directives already exist.
+     *
+     * Comments, blank lines, placement, and surrounding IfModule wrappers are
+     * deliberately ignored. A manually installed equivalent is respected and
+     * will never be duplicated.
+     */
+    private static function htaccess_mime_rule_exists( string $contents ): bool {
+        $normalised  = self::normalise_newlines( $contents );
+        $has_type    = false;
+        $has_charset = false;
+
+        foreach ( explode( "\n", $normalised ) as $line ) {
+            $line = trim( (string) preg_replace( '~\s+#.*$~', '', $line ) );
+
+            if ( '' === $line || str_starts_with( $line, '#' ) ) {
+                continue;
+            }
+
+            $parts = preg_split( '~\s+~', $line );
+
+            if ( ! is_array( $parts ) || count( $parts ) < 3 ) {
+                continue;
+            }
+
+            $directive = strtolower( (string) $parts[0] );
+            $value     = strtolower( (string) $parts[1] );
+            $targets   = array_map( 'strtolower', array_slice( $parts, 2 ) );
+
+            if ( 'addtype' === $directive && 'text/markdown' === $value && in_array( '.md', $targets, true ) ) {
+                $has_type = true;
+            }
+
+            if ( 'addcharset' === $directive && 'utf-8' === $value && in_array( '.md', $targets, true ) ) {
+                $has_charset = true;
+            }
+        }
+
+        return $has_type && $has_charset;
+    }
+
+    /**
+     * Insert only the missing managed .htaccess blocks without altering the
+     * surrounding content more than necessary.
      */
     private static function build_htaccess_contents( string $contents ): string {
-        if ( self::htaccess_rule_exists( $contents ) ) {
+        $blocks = [];
+
+        if ( ! self::htaccess_rule_exists( $contents ) ) {
+            $blocks[] = self::htaccess_rule_block();
+        }
+
+        if ( ! self::htaccess_mime_rule_exists( $contents ) ) {
+            $blocks[] = self::htaccess_mime_rule_block();
+        }
+
+        if ( ! $blocks ) {
             return $contents;
         }
 
-        $eol        = self::detect_eol( $contents );
-        $normalised = self::normalise_newlines( $contents );
-        $block      = self::htaccess_rule_block();
-
-        // Remove a misplaced copy of the exact block before inserting it in
-        // the canonical location. This keeps the operation idempotent.
-        $normalised = str_replace( $block . "\n\n", '', $normalised );
-        $normalised = str_replace( "\n\n" . $block, '', $normalised );
-        $normalised = str_replace( $block, '', $normalised );
-        $normalised = ltrim( $normalised, "\n" );
-
-        $wp_pos = strpos( $normalised, '# BEGIN WordPress' );
+        $eol           = self::detect_eol( $contents );
+        $normalised    = self::normalise_newlines( $contents );
+        $managed_block = implode( "\n\n", $blocks );
+        $normalised    = ltrim( $normalised, "\n" );
+        $wp_pos        = strpos( $normalised, '# BEGIN WordPress' );
 
         if ( false !== $wp_pos ) {
             $before = rtrim( substr( $normalised, 0, $wp_pos ), "\n" );
             $after  = ltrim( substr( $normalised, $wp_pos ), "\n" );
 
             $new_contents = '' !== $before
-                ? $before . "\n\n" . $block . "\n\n" . $after
-                : $block . "\n\n" . $after;
+                ? $before . "\n\n" . $managed_block . "\n\n" . $after
+                : $managed_block . "\n\n" . $after;
         } else {
             $new_contents = '' !== trim( $normalised )
-                ? $block . "\n\n" . ltrim( $normalised, "\n" )
-                : $block . "\n";
+                ? $managed_block . "\n\n" . ltrim( $normalised, "\n" )
+                : $managed_block . "\n";
         }
 
         if ( "\n" !== $eol ) {
@@ -1408,26 +1475,28 @@ final class BL_Markdown_For_Agents {
      * Perform an end-to-end public request check. A unique query parameter is
      * used so a stale page cache is less likely to hide the current result.
      *
-     * @return array{available:bool,passed:bool,html_url:string,markdown_url:string,html_status:int,markdown_status:int,message:string}
+     * @return array{available:bool,passed:bool,html_url:string,markdown_url:string,html_status:int,markdown_status:int,markdown_content_type:string,mime_live_verified:bool,message:string}
      */
     private static function verify_htaccess_live(): array {
         $target = self::verification_target();
 
         if ( null === $target ) {
             return [
-                'available'       => false,
-                'passed'          => false,
-                'html_url'        => '',
-                'markdown_url'    => '',
-                'html_status'     => 0,
-                'markdown_status' => 0,
-                'message'         => __( 'The rule is present in .htaccess, but no non-homepage Markdown companion is currently recorded for an end-to-end live test. Run the Markdown scan after uploading companion files.', 'bloglogistics-markdown-for-agents' ),
+                'available'             => false,
+                'passed'                => false,
+                'html_url'              => '',
+                'markdown_url'          => '',
+                'html_status'           => 0,
+                'markdown_status'       => 0,
+                'markdown_content_type' => '',
+                'mime_live_verified'    => false,
+                'message'               => __( 'The .htaccess rules are present, but no non-homepage Markdown companion is currently recorded for an end-to-end live test. Run the Markdown scan after uploading companion files.', 'bloglogistics-markdown-for-agents' ),
             ];
         }
 
-        $token       = rawurlencode( (string) time() . '-' . (string) wp_rand( 100000, 999999 ) );
-        $html_test   = add_query_arg( 'bloglogistics_mfa_verify', $token, $target['html_url'] );
-        $md_test     = add_query_arg( 'bloglogistics_mfa_verify', $token, $target['markdown_url'] );
+        $token        = rawurlencode( (string) time() . '-' . (string) wp_rand( 100000, 999999 ) );
+        $html_test    = add_query_arg( 'bloglogistics_mfa_verify', $token, $target['html_url'] );
+        $md_test      = add_query_arg( 'bloglogistics_mfa_verify', $token, $target['markdown_url'] );
         $request_args = [
             'timeout'             => 12,
             'redirection'         => 5,
@@ -1443,15 +1512,17 @@ final class BL_Markdown_For_Agents {
 
         if ( is_wp_error( $html_response ) ) {
             return [
-                'available'       => true,
-                'passed'          => false,
-                'html_url'        => $target['html_url'],
-                'markdown_url'    => $target['markdown_url'],
-                'html_status'     => 0,
-                'markdown_status' => 0,
-                'message'         => sprintf(
+                'available'             => true,
+                'passed'                => false,
+                'html_url'              => $target['html_url'],
+                'markdown_url'          => $target['markdown_url'],
+                'html_status'           => 0,
+                'markdown_status'       => 0,
+                'markdown_content_type' => '',
+                'mime_live_verified'    => false,
+                'message'               => sprintf(
                     /* translators: %s: HTTP request error. */
-                    __( 'The .htaccess rule is present, but the public HTML verification request failed: %s', 'bloglogistics-markdown-for-agents' ),
+                    __( 'The .htaccess rules are present, but the public HTML verification request failed: %s', 'bloglogistics-markdown-for-agents' ),
                     $html_response->get_error_message()
                 ),
             ];
@@ -1462,13 +1533,15 @@ final class BL_Markdown_For_Agents {
 
         if ( is_wp_error( $md_response ) ) {
             return [
-                'available'       => true,
-                'passed'          => false,
-                'html_url'        => $target['html_url'],
-                'markdown_url'    => $target['markdown_url'],
-                'html_status'     => $html_status,
-                'markdown_status' => 0,
-                'message'         => sprintf(
+                'available'             => true,
+                'passed'                => false,
+                'html_url'              => $target['html_url'],
+                'markdown_url'          => $target['markdown_url'],
+                'html_status'           => $html_status,
+                'markdown_status'       => 0,
+                'markdown_content_type' => '',
+                'mime_live_verified'    => false,
+                'message'               => sprintf(
                     /* translators: %s: HTTP request error. */
                     __( 'The HTML page responded, but the Markdown verification request failed: %s', 'bloglogistics-markdown-for-agents' ),
                     $md_response->get_error_message()
@@ -1476,30 +1549,50 @@ final class BL_Markdown_For_Agents {
             ];
         }
 
-        $markdown_status = (int) wp_remote_retrieve_response_code( $md_response );
-        $passed          = 200 === $html_status && 200 === $markdown_status;
+        $markdown_status       = (int) wp_remote_retrieve_response_code( $md_response );
+        $markdown_content_type = (string) wp_remote_retrieve_header( $md_response, 'content-type' );
+        $mime_live_verified    = 'preferred' === self::markdown_mime_state( $markdown_content_type );
+        $http_passed           = 200 === $html_status && 200 === $markdown_status;
+        $passed                = $http_passed && $mime_live_verified;
+
+        if ( $passed ) {
+            $message = __( 'Live verification passed: the WordPress page and Markdown companion returned HTTP 200, and the Markdown companion returned the preferred text/markdown Content-Type.', 'bloglogistics-markdown-for-agents' );
+        } elseif ( ! $http_passed ) {
+            $message = sprintf(
+                /* translators: 1: HTML status code, 2: Markdown status code. */
+                __( 'Live verification did not pass. The WordPress page returned HTTP %1$d and the Markdown companion returned HTTP %2$d.', 'bloglogistics-markdown-for-agents' ),
+                $html_status,
+                $markdown_status
+            );
+        } else {
+            $content_type_label = '' !== trim( $markdown_content_type )
+                ? trim( $markdown_content_type )
+                : __( 'No Content-Type header', 'bloglogistics-markdown-for-agents' );
+
+            $message = sprintf(
+                /* translators: %s: Content-Type response header or no-header label. */
+                __( 'Both endpoints returned HTTP 200, but the Markdown MIME rule is not live yet. The Markdown companion returned: %s.', 'bloglogistics-markdown-for-agents' ),
+                $content_type_label
+            );
+        }
 
         return [
-            'available'       => true,
-            'passed'          => $passed,
-            'html_url'        => $target['html_url'],
-            'markdown_url'    => $target['markdown_url'],
-            'html_status'     => $html_status,
-            'markdown_status' => $markdown_status,
-            'message'         => $passed
-                ? __( 'Live verification passed: both the WordPress page and its Markdown companion returned HTTP 200.', 'bloglogistics-markdown-for-agents' )
-                : sprintf(
-                    /* translators: 1: HTML status code, 2: Markdown status code. */
-                    __( 'Live verification did not pass. The WordPress page returned HTTP %1$d and the Markdown companion returned HTTP %2$d.', 'bloglogistics-markdown-for-agents' ),
-                    $html_status,
-                    $markdown_status
-                ),
+            'available'             => true,
+            'passed'                => $passed,
+            'html_url'              => $target['html_url'],
+            'markdown_url'          => $target['markdown_url'],
+            'html_status'           => $html_status,
+            'markdown_status'       => $markdown_status,
+            'markdown_content_type' => $markdown_content_type,
+            'mime_live_verified'    => $mime_live_verified,
+            'message'               => $message,
         ];
     }
 
     /**
-     * Install or repair the .htaccess compatibility rule, backing up the
-     * existing file before every write and verifying the result afterwards.
+     * Install or repair the .htaccess compatibility and Markdown MIME rules,
+     * backing up the existing file before every write and verifying the result
+     * afterwards.
      *
      * @param bool $verify_live Whether to perform a public end-to-end check.
      * @return array<string,mixed>
@@ -1508,18 +1601,22 @@ final class BL_Markdown_For_Agents {
         $public_root   = self::public_root();
         $htaccess_file = wp_normalize_path( $public_root . '.htaccess' );
         $status        = [
-            'state'            => 'unknown',
-            'message'          => '',
-            'htaccess_file'    => $htaccess_file,
-            'backup_file'      => '',
-            'file_verified'    => false,
-            'live_available'   => false,
-            'live_verified'    => false,
-            'html_url'         => '',
-            'markdown_url'     => '',
-            'html_status'      => 0,
-            'markdown_status'  => 0,
-            'verified_at'      => time(),
+            'state'                 => 'unknown',
+            'message'               => '',
+            'htaccess_file'         => $htaccess_file,
+            'backup_file'           => '',
+            'file_verified'         => false,
+            'rewrite_rule_verified' => false,
+            'mime_rule_verified'    => false,
+            'live_available'        => false,
+            'live_verified'         => false,
+            'mime_live_verified'    => false,
+            'html_url'              => '',
+            'markdown_url'          => '',
+            'html_status'           => 0,
+            'markdown_status'       => 0,
+            'markdown_content_type' => '',
+            'verified_at'           => time(),
         ];
 
         if ( ! self::server_supports_htaccess( $htaccess_file ) ) {
@@ -1536,7 +1633,7 @@ final class BL_Markdown_For_Agents {
         if ( $exists ) {
             if ( ! is_readable( $htaccess_file ) ) {
                 $status['state']   = 'failed';
-                $status['message'] = __( 'The website .htaccess file is not readable, so the compatibility rule could not be checked or installed.', 'bloglogistics-markdown-for-agents' );
+                $status['message'] = __( 'The website .htaccess file is not readable, so the required Markdown rules could not be checked or installed.', 'bloglogistics-markdown-for-agents' );
                 update_option( self::HTACCESS_STATUS_OPTION, $status, false );
                 update_option( self::HTACCESS_NOTICE_OPTION, '1', false );
                 return $status;
@@ -1555,7 +1652,9 @@ final class BL_Markdown_For_Agents {
             $contents = $read;
         }
 
-        $needs_write = ! self::htaccess_rule_exists( $contents );
+        $rewrite_present = self::htaccess_rule_exists( $contents );
+        $mime_present    = self::htaccess_mime_rule_exists( $contents );
+        $needs_write     = ! $rewrite_present || ! $mime_present;
 
         if ( $needs_write ) {
             if ( $exists && ! is_writable( $htaccess_file ) ) {
@@ -1568,7 +1667,7 @@ final class BL_Markdown_For_Agents {
 
             if ( ! $exists && ! is_writable( dirname( $htaccess_file ) ) ) {
                 $status['state']   = 'failed';
-                $status['message'] = __( 'The website root is not writable, so the .htaccess compatibility rule could not be created.', 'bloglogistics-markdown-for-agents' );
+                $status['message'] = __( 'The website root is not writable, so the required Markdown .htaccess rules could not be created.', 'bloglogistics-markdown-for-agents' );
                 update_option( self::HTACCESS_STATUS_OPTION, $status, false );
                 update_option( self::HTACCESS_NOTICE_OPTION, '1', false );
                 return $status;
@@ -1599,7 +1698,7 @@ final class BL_Markdown_For_Agents {
                 }
 
                 $status['state']   = 'failed';
-                $status['message'] = __( 'The compatibility rule could not be written to .htaccess. The original file was restored when possible.', 'bloglogistics-markdown-for-agents' );
+                $status['message'] = __( 'The required Markdown rules could not be written to .htaccess. The original file was restored when possible.', 'bloglogistics-markdown-for-agents' );
                 update_option( self::HTACCESS_STATUS_OPTION, $status, false );
                 update_option( self::HTACCESS_NOTICE_OPTION, '1', false );
                 return $status;
@@ -1607,8 +1706,10 @@ final class BL_Markdown_For_Agents {
         }
 
         clearstatcache( true, $htaccess_file );
-        $saved_contents = @file_get_contents( $htaccess_file );
-        $file_verified  = is_string( $saved_contents ) && self::htaccess_rule_exists( $saved_contents );
+        $saved_contents          = @file_get_contents( $htaccess_file );
+        $rewrite_rule_verified   = is_string( $saved_contents ) && self::htaccess_rule_exists( $saved_contents );
+        $mime_rule_verified      = is_string( $saved_contents ) && self::htaccess_mime_rule_exists( $saved_contents );
+        $file_verified           = $rewrite_rule_verified && $mime_rule_verified;
 
         if ( ! $file_verified ) {
             if ( $needs_write && $exists && '' !== $status['backup_file'] ) {
@@ -1624,22 +1725,33 @@ final class BL_Markdown_For_Agents {
             return $status;
         }
 
-        $status['file_verified'] = true;
-        $status['state']         = $needs_write ? 'installed' : 'already_present';
-        $status['message']       = $needs_write
-            ? __( 'The Markdown companion compatibility rule was added to .htaccess and confirmed in the saved file.', 'bloglogistics-markdown-for-agents' )
-            : __( 'An equivalent Markdown companion compatibility rule is already present in .htaccess. No changes were made.', 'bloglogistics-markdown-for-agents' );
+        $status['file_verified']         = true;
+        $status['rewrite_rule_verified'] = true;
+        $status['mime_rule_verified']    = true;
+        $status['state']                 = $needs_write ? 'installed' : 'already_present';
+
+        if ( ! $rewrite_present && ! $mime_present ) {
+            $status['message'] = __( 'The Markdown permalink compatibility and MIME rules were added to .htaccess and confirmed in the saved file.', 'bloglogistics-markdown-for-agents' );
+        } elseif ( ! $rewrite_present ) {
+            $status['message'] = __( 'The Markdown permalink compatibility rule was added to .htaccess and confirmed in the saved file. An equivalent Markdown MIME rule was already present and was not duplicated.', 'bloglogistics-markdown-for-agents' );
+        } elseif ( ! $mime_present ) {
+            $status['message'] = __( 'The Markdown MIME rule was added to .htaccess and confirmed in the saved file. An equivalent permalink compatibility rule was already present and was not duplicated.', 'bloglogistics-markdown-for-agents' );
+        } else {
+            $status['message'] = __( 'Equivalent Markdown permalink compatibility and MIME rules are already present in .htaccess. No changes were made.', 'bloglogistics-markdown-for-agents' );
+        }
 
         if ( $verify_live ) {
             $live = self::verify_htaccess_live();
 
-            $status['live_available']  = $live['available'];
-            $status['live_verified']   = $live['passed'];
-            $status['html_url']        = $live['html_url'];
-            $status['markdown_url']    = $live['markdown_url'];
-            $status['html_status']     = $live['html_status'];
-            $status['markdown_status'] = $live['markdown_status'];
-            $status['message']        .= ' ' . $live['message'];
+            $status['live_available']        = $live['available'];
+            $status['live_verified']         = $live['passed'];
+            $status['mime_live_verified']    = $live['mime_live_verified'];
+            $status['html_url']              = $live['html_url'];
+            $status['markdown_url']          = $live['markdown_url'];
+            $status['html_status']           = $live['html_status'];
+            $status['markdown_status']       = $live['markdown_status'];
+            $status['markdown_content_type'] = $live['markdown_content_type'];
+            $status['message']              .= ' ' . $live['message'];
 
             if ( $live['available'] && ! $live['passed'] ) {
                 $status['state'] = 'verification_failed';
@@ -2378,39 +2490,50 @@ final class BL_Markdown_For_Agents {
         echo '</td></tr>';
         echo '<tr><th scope="row">' . esc_html__( '.htaccess automation', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( ! empty( $server['supports_htaccess'] ) ? 'bl-mfa-health-ok' : 'bl-mfa-health-warn' ) . '">' . ( ! empty( $server['supports_htaccess'] ) ? esc_html__( 'Supported', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Manual server configuration required', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
         echo '<tr><th scope="row">' . esc_html__( 'mod_rewrite', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $server['mod_rewrite'] ) . '</td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( 'mod_mime', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $server['mod_mime'] ) . '</td></tr>';
         echo '<tr><th scope="row">' . esc_html__( '.htaccess writable', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( ! empty( $server['htaccess_writable'] ) ? 'bl-mfa-health-ok' : 'bl-mfa-health-warn' ) . '">' . ( ! empty( $server['htaccess_writable'] ) ? esc_html__( 'Yes', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'No', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
         echo '</tbody></table>';
         if ( in_array( (string) $server['server_type'], [ 'nginx', 'iis' ], true ) ) {
-            echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'This server does not use Apache .htaccess rules. The plugin will not try to install the compatibility rule. The equivalent permalink handling must be configured at the web-server level.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'This server does not use Apache .htaccess rules. The plugin will not try to install the permalink compatibility or Markdown MIME rules. Equivalent permalink handling and Markdown MIME configuration must be set at the web-server level.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
         }
 
-        echo '<h2 style="margin-top:2em;">' . esc_html__( 'WordPress / Markdown Directory Compatibility', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        echo '<p>' . esc_html__( 'Static /slug/index.md companions create real directories. On Apache-compatible servers, the plugin maintains a root .htaccess rule so /slug/ continues to load the WordPress page while /slug/index.md continues to serve the Markdown file.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<h2 style="margin-top:2em;">' . esc_html__( 'WordPress / Markdown .htaccess Rules', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        echo '<p>' . esc_html__( 'On Apache-compatible servers, the plugin maintains two root .htaccess protections: a permalink compatibility rule so /slug/ continues to load WordPress beside /slug/index.md, and a MIME rule so .md files are served as UTF-8 text/markdown. Existing equivalent directives are respected wherever they already appear and are never duplicated.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
-        $file_verified  = ! empty( $htaccess_status['file_verified'] );
-        $live_available = ! empty( $htaccess_status['live_available'] );
-        $live_verified  = ! empty( $htaccess_status['live_verified'] );
-        $verified_at    = isset( $htaccess_status['verified_at'] ) ? (int) $htaccess_status['verified_at'] : 0;
+        $file_verified         = ! empty( $htaccess_status['file_verified'] );
+        $rewrite_verified      = ! empty( $htaccess_status['rewrite_rule_verified'] );
+        $mime_rule_verified    = ! empty( $htaccess_status['mime_rule_verified'] );
+        $live_available        = ! empty( $htaccess_status['live_available'] );
+        $live_verified         = ! empty( $htaccess_status['live_verified'] );
+        $mime_live_verified    = ! empty( $htaccess_status['mime_live_verified'] );
+        $markdown_content_type = isset( $htaccess_status['markdown_content_type'] ) ? (string) $htaccess_status['markdown_content_type'] : '';
+        $verified_at           = isset( $htaccess_status['verified_at'] ) ? (int) $htaccess_status['verified_at'] : 0;
 
         echo '<table class="form-table" role="presentation"><tbody>';
-        echo '<tr><th scope="row">' . esc_html__( '.htaccess rule', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $file_verified ? esc_html__( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( 'Permalink compatibility rule', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $rewrite_verified ? esc_html__( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( 'Markdown MIME rule', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $mime_rule_verified ? esc_html__( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
         if ( ! empty( $htaccess_status['backup_file'] ) ) {
             echo '<tr><th scope="row">' . esc_html__( 'Most recent backup', 'bloglogistics-markdown-for-agents' ) . '</th><td><code>' . esc_html( basename( (string) $htaccess_status['backup_file'] ) ) . '</code></td></tr>';
         }
         if ( $live_available ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Compatibility live test', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $live_verified ? esc_html__( 'Passed', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Did not pass', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
+            echo '<tr><th scope="row">' . esc_html__( 'Live .htaccess test', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $live_verified ? esc_html__( 'Passed', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Did not pass', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
             if ( ! empty( $htaccess_status['html_url'] ) ) {
                 echo '<br><span class="description">' . esc_html__( 'WordPress page:', 'bloglogistics-markdown-for-agents' ) . ' <code>' . esc_html( (string) $htaccess_status['html_url'] ) . '</code> (' . esc_html( (string) (int) $htaccess_status['html_status'] ) . ')</span>';
             }
             if ( ! empty( $htaccess_status['markdown_url'] ) ) {
                 echo '<br><span class="description">' . esc_html__( 'Markdown companion:', 'bloglogistics-markdown-for-agents' ) . ' <code>' . esc_html( (string) $htaccess_status['markdown_url'] ) . '</code> (' . esc_html( (string) (int) $htaccess_status['markdown_status'] ) . ')</span>';
             }
+            echo '<br><span class="description">' . esc_html__( 'Markdown MIME:', 'bloglogistics-markdown-for-agents' ) . ' <strong class="' . esc_attr( $mime_live_verified ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $mime_live_verified ? esc_html__( 'Live and correct', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not confirmed live', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
+            if ( '' !== $markdown_content_type ) {
+                echo ' <code>' . esc_html( $markdown_content_type ) . '</code>';
+            }
+            echo '</span>';
             echo '</td></tr>';
         } elseif ( $file_verified ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Compatibility live test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html__( 'Waiting for a detected non-homepage Markdown companion.', 'bloglogistics-markdown-for-agents' ) . '</td></tr>';
+            echo '<tr><th scope="row">' . esc_html__( 'Live .htaccess test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html__( 'Waiting for a detected non-homepage Markdown companion.', 'bloglogistics-markdown-for-agents' ) . '</td></tr>';
         }
         if ( $verified_at ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Last compatibility check', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( wp_date( 'Y-m-d H:i:s T', $verified_at ) ) . '</td></tr>';
+            echo '<tr><th scope="row">' . esc_html__( 'Last .htaccess check', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( wp_date( 'Y-m-d H:i:s T', $verified_at ) ) . '</td></tr>';
         }
         if ( ! empty( $htaccess_status['message'] ) ) {
             echo '<tr><th scope="row">' . esc_html__( 'Status', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $htaccess_status['message'] ) . '</td></tr>';
@@ -2420,9 +2543,9 @@ final class BL_Markdown_For_Agents {
         echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
         wp_nonce_field( 'bloglogistics_mfa_htaccess' );
         echo '<input type="hidden" name="action" value="bloglogistics_mfa_htaccess">';
-        submit_button( __( 'Install / Repair and Verify .htaccess Rule', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
+        submit_button( __( 'Install / Repair and Verify .htaccess Rules', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
         echo '</form>';
-        echo '<p class="description">' . esc_html__( 'Before changing an existing .htaccess file, the plugin creates a timestamped backup beside it. If the write cannot be verified, the plugin attempts to restore the original file automatically.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p class="description">' . esc_html__( 'Before adding either missing rule to an existing .htaccess file, the plugin creates one timestamped backup beside it. If equivalent directives already exist, the file is left untouched and no unnecessary backup is created. If a write cannot be verified, the plugin attempts to restore the original file automatically.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         echo '<h3 style="margin-top:1.5em;">' . esc_html__( '.htaccess Backup Management', 'bloglogistics-markdown-for-agents' ) . '</h3>';
         if ( ! $backups ) {
@@ -2528,7 +2651,7 @@ final class BL_Markdown_For_Agents {
 
     public static function handle_htaccess(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_die( esc_html__( 'You do not have permission to manage the .htaccess compatibility rule.', 'bloglogistics-markdown-for-agents' ) );
+            wp_die( esc_html__( 'You do not have permission to manage the .htaccess Markdown rules.', 'bloglogistics-markdown-for-agents' ) );
         }
 
         check_admin_referer( 'bloglogistics_mfa_htaccess' );

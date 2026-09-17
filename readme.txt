@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.3.0
+Stable tag: 2.3.1
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -27,7 +27,7 @@ An administrator explicitly runs a scan after Markdown files are added, removed,
 
 Normal public page loads do not scan directories, check for files, probe URLs, generate Markdown, or make external requests. The plugin uses the already-stored WordPress metadata and outputs discovery markup once for eligible pages.
 
-On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. The plugin safely maintains a root `.htaccess` compatibility rule so the WordPress page and Markdown companion can coexist. Before changing `.htaccess`, the plugin first checks for the equivalent rewrite directives anywhere in the file. If they already exist, including a manually added copy, the plugin leaves the file untouched. When a write is actually required, it creates a timestamped backup beside the live file, reads the file back to confirm the rule was saved, and, when a non-homepage companion is available, performs an end-to-end HTTP check of both the WordPress page and its Markdown companion.
+On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. The plugin safely maintains a root `.htaccess` permalink compatibility rule so the WordPress page and Markdown companion can coexist. Version 2.3.1 also maintains a Markdown MIME rule so `.md` files are served as UTF-8 `text/markdown`. Before changing `.htaccess`, the plugin independently checks for equivalent rewrite and MIME directives anywhere in the file. Existing manually added directives are respected and never duplicated. When a write is actually required, it creates one timestamped backup beside the live file, reads the file back to confirm both required rules are present, and, when a non-homepage companion is available, performs an end-to-end HTTP check that also confirms the live Markdown Content-Type.
 
 Pages that do not have a Markdown companion are automatically ignored.
 
@@ -55,7 +55,7 @@ Those files remain entirely under the site owner's control. This is intentional 
 6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 7. Use **Run Live Endpoint Verification** to check public HTTP status, redirects, Markdown MIME type, and discovery markup.
 8. Review detected companions and use individual or bulk controls to enable or disable discovery, force selected revalidation, or live-verify selected items.
-9. If needed, use **Install / Repair and Verify .htaccess Rule** and review server compatibility and backup status on the same screen.
+9. If needed, use **Install / Repair and Verify .htaccess Rules** and review server compatibility, Markdown MIME delivery, and backup status on the same screen.
 10. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
 
 == Frequently Asked Questions ==
@@ -147,6 +147,16 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.3.1 =
+* Add automatic Apache-compatible Markdown MIME configuration using `AddType text/markdown .md` and `AddCharset UTF-8 .md`.
+* Detect equivalent existing MIME directives anywhere in `.htaccess` and leave manually added rules untouched.
+* Never duplicate the Markdown MIME directives when they are already present.
+* Add the MIME block beside the existing BlogLogistics `.htaccess` rules only when it is actually missing.
+* Create a single timestamped `.htaccess` backup only when a write is required.
+* Verify both the permalink compatibility rule and the Markdown MIME rule after any write.
+* Extend the live `.htaccess` check to require HTTP 200 for the WordPress page and Markdown companion and the preferred `text/markdown` Content-Type.
+* Add `mod_mime` visibility to server diagnostics and display both `.htaccess` rule states in the admin screen.
 
 = 2.3.0 =
 * Add live endpoint verification for detected WordPress pages and Markdown companions.
