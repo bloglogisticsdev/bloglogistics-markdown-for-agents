@@ -1,6 +1,6 @@
 # BlogLogistics Markdown for Agents
 
-BlogLogistics Markdown for Agents advertises user-curated Markdown companion files and `llms.txt` for AI agents without generating Markdown or checking the filesystem on public page loads.
+BlogLogistics Markdown for Agents advertises and validates user-curated Markdown companion files and `llms.txt` for AI agents without generating Markdown or checking the filesystem on public page loads.
 
 ## Philosophy
 
@@ -13,10 +13,28 @@ Users create those files themselves. The plugin only discovers them during an ex
 1. Create a curated `/llms.txt`.
 2. Create any Markdown companion files you want, for example `/about-us/index.md`.
 3. In WordPress, open **BlogLogistics > Markdown for Agents**.
-4. Click **Scan for Markdown Files**.
-5. The plugin confirms the Apache-compatible `.htaccess` rule, creates a timestamped backup before any write, and performs a live WordPress-page/Markdown-companion check when possible.
+4. Click **Scan for Markdown Files and Refresh Health**.
+5. The plugin refreshes the Markdown Health Dashboard, validates companion encoding and llms.txt references, confirms the Apache-compatible `.htaccess` rule, creates a timestamped backup before any write, and performs a live WordPress-page/Markdown-companion check when possible.
 6. Review detected companions and disable discovery for any specific page or post if required.
 7. Purge page/CDN caches after changes.
+
+
+## Markdown Health Dashboard
+
+Version 2.2.0 adds an administrator-only health snapshot that is refreshed during the manual Markdown scan. It reports:
+
+- published posts and pages checked;
+- detected and missing Markdown companions;
+- companions that may be stale because the WordPress content was modified after the Markdown file timestamp;
+- invalid UTF-8, Unicode replacement characters, common mojibake patterns, and UTF-8 BOM warnings;
+- `llms.txt` presence and encoding;
+- broken same-site Markdown links referenced by `llms.txt`;
+- duplicate `llms.txt` links and a missing recommended H1 heading;
+- per-page discovery exclusions.
+
+The health checks read local files only and never rewrite Markdown or `llms.txt`. External links in `llms.txt` are not fetched. The stored health snapshot is administrator-only and does not add filesystem work to public page requests.
+
+The stale-file indicator is deliberately labelled **possibly stale**. It compares timestamps rather than comparing semantic content, and deployment tools can change filesystem timestamps.
 
 ## Performance
 
@@ -28,7 +46,7 @@ The scan stores a matching companion URL in the `bloglogistics_markdown_url` cus
 
 A physical `/about-us/index.md` companion creates a real `/about-us/` directory. On Apache-compatible servers, that directory can prevent WordPress from receiving the normal `/about-us/` request and can produce a plain `Forbidden` response.
 
-Version 2.1.1 maintains this rule in the site's root `.htaccess` file:
+The plugin maintains this rule in the site's root `.htaccess` file:
 
 ```apache
 # ======================================================================

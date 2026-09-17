@@ -4,11 +4,11 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.1.1
+Stable tag: 2.2.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Advertises user-curated Markdown companion files and llms.txt for AI agents, with safe .htaccess compatibility for Markdown companion directories.
+Advertises and validates user-curated Markdown companion files and llms.txt for AI agents, with admin health checks and safe .htaccess compatibility.
 
 == Description ==
 
@@ -27,9 +27,11 @@ An administrator explicitly runs a scan after Markdown files are added, removed,
 
 Normal public page loads do not scan directories, check for files, probe URLs, generate Markdown, or make external requests. The plugin uses the already-stored WordPress metadata and outputs discovery markup once for eligible pages.
 
-On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. Version 2.1.1 safely maintains a root `.htaccess` compatibility rule so the WordPress page and Markdown companion can coexist. Before changing `.htaccess`, the plugin first checks for the equivalent rewrite directives anywhere in the file. If they already exist, including a manually added copy, the plugin leaves the file untouched. When a write is actually required, it creates a timestamped backup beside the live file, reads the file back to confirm the rule was saved, and, when a non-homepage companion is available, performs an end-to-end HTTP check of both the WordPress page and its Markdown companion.
+On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. The plugin safely maintains a root `.htaccess` compatibility rule so the WordPress page and Markdown companion can coexist. Before changing `.htaccess`, the plugin first checks for the equivalent rewrite directives anywhere in the file. If they already exist, including a manually added copy, the plugin leaves the file untouched. When a write is actually required, it creates a timestamped backup beside the live file, reads the file back to confirm the rule was saved, and, when a non-homepage companion is available, performs an end-to-end HTTP check of both the WordPress page and its Markdown companion.
 
 Pages that do not have a Markdown companion are automatically ignored.
+
+Version 2.2.0 adds an administrator-only Markdown Health Dashboard. Each manual scan now checks whether companions are present, compares WordPress modification times with Markdown file timestamps to flag potentially stale companions, validates UTF-8 encoding and common mojibake patterns, and validates the user-managed `llms.txt` file and its local Markdown references. These checks do not run on public page loads and do not modify any Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -49,8 +51,8 @@ Those files remain entirely under the site owner's control. This is intentional 
 2. Activate BlogLogistics Markdown for Agents.
 3. Create and upload your curated `llms.txt` and Markdown companion files.
 4. Go to BlogLogistics > Markdown for Agents.
-5. Click **Scan for Markdown Files**. The scan also verifies the `.htaccess` compatibility rule and runs a live coexistence check when a suitable Markdown companion is available.
-6. Review the detected Markdown companions and optionally disable discovery for specific posts or pages.
+5. Click **Scan for Markdown Files and Refresh Health**. The scan detects companion files, refreshes the Markdown Health Dashboard, validates encoding and llms.txt references, verifies the `.htaccess` compatibility rule, and runs a live coexistence check when a suitable Markdown companion is available.
+6. Review the health results and detected Markdown companions, then optionally disable discovery for specific posts or pages.
 7. If needed, use **Install / Repair and Verify .htaccess Rule** on the same screen.
 8. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
 
@@ -64,6 +66,18 @@ No. llms.txt remains a manually curated file under the site owner's full control
 
 = Does the plugin check for Markdown files on every page load? =
 No. Filesystem checks occur only when an administrator explicitly runs the scan from BlogLogistics > Markdown for Agents.
+
+= What does the Markdown Health Dashboard check? =
+The manual scan reports companion presence, potentially stale files based on timestamps, UTF-8 encoding problems, common mojibake patterns, and llms.txt validation results. It does not rewrite any content.
+
+= How is a Markdown companion marked as possibly stale? =
+If the WordPress post or page was modified more than 60 seconds after the Markdown file timestamp, the dashboard flags the companion for review. This is a heuristic because deployment tools can alter file timestamps.
+
+= What does llms.txt validation check? =
+It checks that llms.txt exists and is readable, validates UTF-8 encoding, reports common encoding corruption, checks for a recommended H1 heading, detects duplicate links, and verifies same-site Markdown links against local files. External links are not requested.
+
+= Does the health scan make external HTTP requests? =
+The Markdown and llms.txt health checks read local files only. The existing .htaccess coexistence verification can make a public request to the site's own WordPress page and Markdown companion when a suitable companion is available.
 
 = What happens on a normal page load? =
 For a WordPress post or page with a recorded Markdown companion, the plugin reads the stored post metadata and outputs the discovery markup once. It performs no Markdown filesystem check and makes no external request.
@@ -113,6 +127,15 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.2.0 =
+* Add an administrator-only Markdown Health Dashboard.
+* Flag Markdown companions as possibly stale when the WordPress post/page modification time is newer than the Markdown file timestamp by more than 60 seconds.
+* Validate Markdown companion files as UTF-8 and detect replacement characters, common mojibake patterns, and UTF-8 BOM warnings.
+* Validate the user-managed llms.txt file without modifying it.
+* Check same-site Markdown links listed in llms.txt against local files without making external HTTP requests.
+* Report broken local Markdown references, duplicate llms.txt links, and a missing recommended H1 heading.
+* Store health results in a non-autoloaded WordPress option so public page requests perform no new filesystem or validation work.
 
 = 2.1.1 =
 * Detect an equivalent Markdown companion rewrite rule anywhere in `.htaccess`, regardless of the surrounding comments or whether it was added manually.

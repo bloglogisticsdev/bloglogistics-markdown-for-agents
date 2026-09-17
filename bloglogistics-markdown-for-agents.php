@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       BlogLogistics Markdown for Agents
  * Plugin URI:        https://github.com/bloglogisticsdev/bloglogistics-markdown-for-agents
- * Description:       Advertises user-curated Markdown companion files and llms.txt for AI agents, with safe .htaccess compatibility for companion directories on Apache-compatible servers.
- * Version:           2.1.1
+ * Description:       Advertises and validates user-curated Markdown companion files and llms.txt for AI agents, with admin health checks and safe .htaccess compatibility.
+ * Version:           2.2.0
  * Requires at least: 7.0
  * Requires PHP:      8.3
  * Author:            BlogLogistics
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BLOGLOGISTICS_MFA_VERSION', '2.1.1' );
+define( 'BLOGLOGISTICS_MFA_VERSION', '2.2.0' );
 define( 'BLOGLOGISTICS_MFA_SLUG', 'bloglogistics-markdown-for-agents' );
 define( 'BLOGLOGISTICS_MFA_FILE', __FILE__ );
 define( 'BLOGLOGISTICS_MFA_DIR', plugin_dir_path( __FILE__ ) );

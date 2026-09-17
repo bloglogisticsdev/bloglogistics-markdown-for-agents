@@ -18,6 +18,8 @@ final class BL_Markdown_For_Agents {
     private const LAST_SCAN_OPTION = 'bloglogistics_mfa_last_scan';
     private const HTACCESS_STATUS_OPTION = 'bloglogistics_mfa_htaccess_status';
     private const HTACCESS_NOTICE_OPTION = 'bloglogistics_mfa_htaccess_notice_pending';
+    private const HEALTH_OPTION = 'bloglogistics_mfa_health';
+    private const VALIDATION_MAX_BYTES = 2097152;
 
     public static function init(): void {
         self::load_textdomain();
@@ -61,6 +63,10 @@ final class BL_Markdown_For_Agents {
             add_option( self::LAST_SCAN_OPTION, 0, '', false );
         }
 
+        if ( false === get_option( self::HEALTH_OPTION, false ) ) {
+            add_option( self::HEALTH_OPTION, [], '', false );
+        }
+
         delete_option( BLOGLOGISTICS_MFA_SETTINGS_OPTION );
         self::ensure_htaccess_rule( true );
         update_option( BLOGLOGISTICS_MFA_VERSION_OPTION, BLOGLOGISTICS_MFA_VERSION, false );
@@ -85,6 +91,10 @@ final class BL_Markdown_For_Agents {
 
         if ( false === get_option( self::LAST_SCAN_OPTION, false ) ) {
             add_option( self::LAST_SCAN_OPTION, 0, '', false );
+        }
+
+        if ( false === get_option( self::HEALTH_OPTION, false ) ) {
+            add_option( self::HEALTH_OPTION, [], '', false );
         }
 
         self::ensure_htaccess_rule( true );
@@ -257,6 +267,317 @@ final class BL_Markdown_For_Agents {
         $real_root = trailingslashit( wp_normalize_path( $real_root ) );
 
         return 0 === strpos( $real_file, $real_root );
+    }
+
+    /**
+     * Validate a text file without changing it.
+     *
+     * Validation runs only during an administrator-initiated scan. UTF-8 BOMs
+     * are reported as warnings, while invalid UTF-8, replacement characters,
+     * common mojibake patterns, unreadable content, and oversized files are
+     * treated as validation failures.
+     *
+     * @return array{checked:bool,valid:bool,valid_utf8:bool,bom:bool,mojibake:bool,size:int,issues:array<int,string>}
+     */
+    private static function validate_text_file( string $file, string $public_root ): array {
+        $result = [
+            'checked'    => false,
+            'valid'      => false,
+            'valid_utf8' => false,
+            'bom'        => false,
+            'mojibake'   => false,
+            'size'       => 0,
+            'issues'     => [],
+        ];
+
+        if ( ! self::is_safe_readable_file( $file, $public_root ) ) {
+            $result['issues'][] = 'unreadable';
+            return $result;
+        }
+
+        $size = @filesize( $file );
+
+        if ( false === $size ) {
+            $result['issues'][] = 'size_unknown';
+            return $result;
+        }
+
+        $result['size'] = (int) $size;
+
+        if ( $size > self::VALIDATION_MAX_BYTES ) {
+            $result['issues'][] = 'too_large';
+            return $result;
+        }
+
+        $contents = @file_get_contents( $file );
+
+        if ( ! is_string( $contents ) ) {
+            $result['issues'][] = 'read_failed';
+            return $result;
+        }
+
+        $result['checked'] = true;
+        $result['bom']     = str_starts_with( $contents, "\xEF\xBB\xBF" );
+
+        if ( function_exists( 'mb_check_encoding' ) ) {
+            $result['valid_utf8'] = mb_check_encoding( $contents, 'UTF-8' );
+        } else {
+            $result['valid_utf8'] = 1 === preg_match( '//u', $contents );
+        }
+
+        if ( ! $result['valid_utf8'] ) {
+            $result['issues'][] = 'invalid_utf8';
+        }
+
+        if ( false !== strpos( $contents, "\xEF\xBF\xBD" ) ) {
+            $result['issues'][] = 'replacement_character';
+        }
+
+        $mojibake_patterns = [
+            'â€',
+            'ï»¿',
+            'Â ',
+            'Ã©',
+            'Ã¨',
+            'Ãª',
+            'Ã¡',
+            'Ã¢',
+            'Ã£',
+            'Ã¤',
+            'Ã­',
+            'Ã³',
+            'Ã´',
+            'Ã¶',
+            'Ãº',
+            'Ã¼',
+            'Ã±',
+            'Ã§',
+        ];
+
+        foreach ( $mojibake_patterns as $pattern ) {
+            if ( false !== strpos( $contents, $pattern ) ) {
+                $result['mojibake'] = true;
+                $result['issues'][] = 'possible_mojibake';
+                break;
+            }
+        }
+
+        if ( $result['bom'] ) {
+            $result['issues'][] = 'utf8_bom';
+        }
+
+        $hard_failures = array_diff( $result['issues'], [ 'utf8_bom' ] );
+        $result['valid'] = $result['valid_utf8'] && empty( $hard_failures );
+
+        return $result;
+    }
+
+    /**
+     * Return a local filesystem path for a same-site URL or path.
+     */
+    private static function local_file_from_url( string $url, string $public_root ): ?string {
+        $site_host = strtolower( (string) wp_parse_url( home_url( '/' ), PHP_URL_HOST ) );
+        $url_host  = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+
+        if ( '' !== $url_host && '' !== $site_host && $url_host !== $site_host ) {
+            return null;
+        }
+
+        $path = wp_parse_url( $url, PHP_URL_PATH );
+
+        if ( ! is_string( $path ) || '' === $path ) {
+            return null;
+        }
+
+        $path      = '/' . ltrim( rawurldecode( $path ), '/' );
+        $home_path = self::home_path();
+
+        if ( '/' !== $home_path ) {
+            if ( 0 !== strpos( trailingslashit( $path ), $home_path ) ) {
+                return null;
+            }
+
+            $path = substr( $path, strlen( rtrim( $home_path, '/' ) ) );
+        }
+
+        $relative = ltrim( $path, '/' );
+
+        if ( '' === $relative || false !== strpos( $relative, '..' ) || false !== strpos( $relative, "\0" ) ) {
+            return null;
+        }
+
+        return wp_normalize_path( $public_root . $relative );
+    }
+
+    /**
+     * Validate the user-managed llms.txt file and its local Markdown links.
+     * External links are left alone. No external HTTP requests are made.
+     *
+     * @return array<string,mixed>
+     */
+    private static function validate_llms_file( string $public_root ): array {
+        $llms_file = wp_normalize_path( $public_root . 'llms.txt' );
+        $result    = [
+            'exists'               => false,
+            'valid'                => false,
+            'encoding'             => [],
+            'local_links_checked'  => 0,
+            'broken_local_links'   => [],
+            'duplicate_links'      => [],
+            'errors'               => [],
+            'warnings'             => [],
+        ];
+
+        if ( ! self::is_safe_readable_file( $llms_file, $public_root ) ) {
+            $result['errors'][] = [ 'code' => 'missing' ];
+            return $result;
+        }
+
+        $result['exists']   = true;
+        $result['encoding'] = self::validate_text_file( $llms_file, $public_root );
+
+        foreach ( $result['encoding']['issues'] as $issue ) {
+            if ( 'utf8_bom' === $issue ) {
+                $result['warnings'][] = [ 'code' => 'utf8_bom' ];
+            } else {
+                $result['errors'][] = [ 'code' => 'encoding', 'value' => $issue ];
+            }
+        }
+
+        if ( empty( $result['encoding']['checked'] ) || empty( $result['encoding']['valid_utf8'] ) ) {
+            return $result;
+        }
+
+        $contents = @file_get_contents( $llms_file );
+
+        if ( ! is_string( $contents ) ) {
+            $result['errors'][] = [ 'code' => 'read_failed' ];
+            return $result;
+        }
+
+        $contents_without_bom = str_starts_with( $contents, "\xEF\xBB\xBF" ) ? substr( $contents, 3 ) : $contents;
+
+        if ( '' === trim( $contents_without_bom ) ) {
+            $result['errors'][] = [ 'code' => 'empty' ];
+            return $result;
+        }
+
+        $first_nonempty = '';
+        foreach ( preg_split( '/\R/u', $contents_without_bom ) ?: [] as $line ) {
+            if ( '' !== trim( $line ) ) {
+                $first_nonempty = trim( $line );
+                break;
+            }
+        }
+
+        if ( '' === $first_nonempty || 1 !== preg_match( '/^#\s+\S/u', $first_nonempty ) ) {
+            $result['warnings'][] = [ 'code' => 'missing_h1' ];
+        }
+
+        $matches = [];
+        preg_match_all(
+            '~\[[^\]\r\n]*\]\(\s*<?([^\s)>]+)>?(?:\s+["\'][^"\']*["\'])?\s*\)~u',
+            $contents_without_bom,
+            $matches
+        );
+
+        $seen = [];
+
+        foreach ( $matches[1] ?? [] as $raw_url ) {
+            $link = html_entity_decode( trim( (string) $raw_url ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+
+            if ( '' === $link ) {
+                continue;
+            }
+
+            if ( isset( $seen[ $link ] ) ) {
+                if ( ! in_array( $link, $result['duplicate_links'], true ) ) {
+                    $result['duplicate_links'][] = $link;
+                }
+            } else {
+                $seen[ $link ] = true;
+            }
+
+            $path = wp_parse_url( $link, PHP_URL_PATH );
+
+            if ( ! is_string( $path ) || ! str_ends_with( strtolower( $path ), '.md' ) ) {
+                continue;
+            }
+
+            $site_host = strtolower( (string) wp_parse_url( home_url( '/' ), PHP_URL_HOST ) );
+            $link_host = strtolower( (string) wp_parse_url( $link, PHP_URL_HOST ) );
+
+            if ( '' !== $link_host && '' !== $site_host && $link_host !== $site_host ) {
+                continue;
+            }
+
+            $result['local_links_checked']++;
+            $target = self::local_file_from_url( $link, $public_root );
+
+            if ( null === $target || ! self::is_safe_readable_file( $target, $public_root ) ) {
+                $result['broken_local_links'][] = $link;
+                $result['errors'][] = [ 'code' => 'broken_local_markdown', 'value' => $link ];
+            }
+        }
+
+        foreach ( $result['duplicate_links'] as $duplicate ) {
+            $result['warnings'][] = [ 'code' => 'duplicate_link', 'value' => $duplicate ];
+        }
+
+        $result['valid'] = empty( $result['errors'] );
+
+        return $result;
+    }
+
+    /**
+     * Convert an encoding issue code into an administrator-facing label.
+     */
+    private static function encoding_issue_label( string $issue ): string {
+        return match ( $issue ) {
+            'unreadable'             => __( 'File is not readable.', 'bloglogistics-markdown-for-agents' ),
+            'size_unknown'           => __( 'File size could not be determined.', 'bloglogistics-markdown-for-agents' ),
+            'too_large'              => __( 'File is larger than the 2 MB validation limit.', 'bloglogistics-markdown-for-agents' ),
+            'read_failed'            => __( 'File contents could not be read.', 'bloglogistics-markdown-for-agents' ),
+            'invalid_utf8'           => __( 'File is not valid UTF-8.', 'bloglogistics-markdown-for-agents' ),
+            'replacement_character'  => __( 'Unicode replacement characters were detected.', 'bloglogistics-markdown-for-agents' ),
+            'possible_mojibake'      => __( 'Possible mojibake or double-encoded punctuation was detected.', 'bloglogistics-markdown-for-agents' ),
+            'utf8_bom'               => __( 'UTF-8 BOM detected. The file is readable, but BOM-free UTF-8 is preferred.', 'bloglogistics-markdown-for-agents' ),
+            default                  => __( 'Unknown encoding validation issue.', 'bloglogistics-markdown-for-agents' ),
+        };
+    }
+
+    /**
+     * Convert a stored llms.txt validation issue into administrator-facing text.
+     *
+     * @param array<string,mixed> $issue Validation issue.
+     */
+    private static function llms_issue_label( array $issue ): string {
+        $code  = isset( $issue['code'] ) ? (string) $issue['code'] : '';
+        $value = isset( $issue['value'] ) ? (string) $issue['value'] : '';
+
+        return match ( $code ) {
+            'missing'               => __( 'llms.txt was not found or is not readable.', 'bloglogistics-markdown-for-agents' ),
+            'read_failed'           => __( 'llms.txt could not be read for validation.', 'bloglogistics-markdown-for-agents' ),
+            'empty'                 => __( 'llms.txt is empty.', 'bloglogistics-markdown-for-agents' ),
+            'missing_h1'            => __( 'The first non-empty line is not an H1 heading. This is recommended for llms.txt.', 'bloglogistics-markdown-for-agents' ),
+            'utf8_bom'              => __( 'llms.txt contains a UTF-8 BOM. It is readable, but BOM-free UTF-8 is preferred.', 'bloglogistics-markdown-for-agents' ),
+            'encoding'              => sprintf(
+                /* translators: %s: encoding validation message. */
+                __( 'Encoding: %s', 'bloglogistics-markdown-for-agents' ),
+                self::encoding_issue_label( $value )
+            ),
+            'broken_local_markdown' => sprintf(
+                /* translators: %s: Markdown URL. */
+                __( 'Referenced local Markdown file was not found: %s', 'bloglogistics-markdown-for-agents' ),
+                $value
+            ),
+            'duplicate_link'        => sprintf(
+                /* translators: %s: duplicated URL. */
+                __( 'Duplicate link in llms.txt: %s', 'bloglogistics-markdown-for-agents' ),
+                $value
+            ),
+            default                 => __( 'Unknown llms.txt validation issue.', 'bloglogistics-markdown-for-agents' ),
+        };
     }
 
     /**
@@ -802,17 +1123,26 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
-     * Scan for user-created Markdown companions and cache their URLs as post
-     * meta. This function is called only by an explicit administrator action.
+     * Scan for user-created Markdown companions, refresh stored discovery URLs,
+     * and build the administrator-only health snapshot.
      *
-     * @return array{checked:int,found:int,removed:int,llms:bool}
+     * Filesystem, timestamp, encoding, and llms.txt checks occur only during
+     * this explicit administrator action. Nothing here runs on public requests.
+     *
+     * @return array{checked:int,found:int,removed:int,missing:int,stale:int,encoding_issues:int,llms:bool}
      */
     private static function scan_markdown_files(): array {
-        $public_root  = self::public_root();
-        $front_page   = ( 'page' === get_option( 'show_on_front' ) ) ? (int) get_option( 'page_on_front' ) : 0;
-        $checked      = 0;
-        $found        = 0;
-        $removed      = 0;
+        $public_root       = self::public_root();
+        $front_page        = ( 'page' === get_option( 'show_on_front' ) ) ? (int) get_option( 'page_on_front' ) : 0;
+        $checked           = 0;
+        $found             = 0;
+        $removed           = 0;
+        $missing           = 0;
+        $stale             = 0;
+        $encoding_issues   = 0;
+        $encoding_warnings = 0;
+        $excluded          = 0;
+        $items             = [];
 
         $post_ids = get_posts(
             [
@@ -820,28 +1150,34 @@ final class BL_Markdown_For_Agents {
                 'post_status'            => 'publish',
                 'numberposts'            => -1,
                 'fields'                 => 'ids',
-                'orderby'                => 'ID',
+                'orderby'                => 'title',
                 'order'                  => 'ASC',
                 'no_found_rows'          => true,
                 'suppress_filters'       => false,
-                'update_post_meta_cache' => false,
+                'update_post_meta_cache' => true,
                 'update_post_term_cache' => false,
             ]
         );
 
         foreach ( $post_ids as $post_id ) {
+            $post_id  = (int) $post_id;
             $checked++;
+            $disabled = self::is_discovery_disabled( $post_id );
 
-            if ( $front_page && $front_page === (int) $post_id ) {
+            if ( $disabled ) {
+                $excluded++;
+            }
+
+            $permalink = get_permalink( $post_id );
+
+            if ( ! is_string( $permalink ) || '' === $permalink ) {
+                continue;
+            }
+
+            if ( $front_page && $front_page === $post_id ) {
                 $relative_markdown = 'index.md';
                 $markdown_url      = home_url( '/index.md' );
             } else {
-                $permalink = get_permalink( $post_id );
-
-                if ( ! is_string( $permalink ) || '' === $permalink ) {
-                    continue;
-                }
-
                 $relative = self::relative_path_from_permalink( $permalink );
 
                 if ( null === $relative || '' === $relative ) {
@@ -853,27 +1189,82 @@ final class BL_Markdown_For_Agents {
             }
 
             $markdown_file = wp_normalize_path( $public_root . ltrim( $relative_markdown, '/' ) );
+            $exists        = self::is_safe_readable_file( $markdown_file, $public_root );
+            $encoding      = [];
+            $md_modified   = 0;
+            $post_modified = (int) get_post_modified_time( 'U', true, $post_id );
+            $is_stale      = false;
 
-            if ( self::is_safe_readable_file( $markdown_file, $public_root ) ) {
+            if ( $exists ) {
                 update_post_meta( $post_id, self::MARKDOWN_URL_META, esc_url_raw( $markdown_url ) );
                 $found++;
-            } elseif ( metadata_exists( 'post', $post_id, self::MARKDOWN_URL_META ) ) {
-                delete_post_meta( $post_id, self::MARKDOWN_URL_META );
-                $removed++;
+
+                $encoding    = self::validate_text_file( $markdown_file, $public_root );
+                $md_modified = (int) @filemtime( $markdown_file );
+                $is_stale    = $post_modified > 0 && $md_modified > 0 && $post_modified > ( $md_modified + 60 );
+
+                if ( $is_stale ) {
+                    $stale++;
+                }
+
+                if ( empty( $encoding['valid'] ) ) {
+                    $encoding_issues++;
+                } elseif ( ! empty( $encoding['bom'] ) ) {
+                    $encoding_warnings++;
+                }
+            } else {
+                if ( metadata_exists( 'post', $post_id, self::MARKDOWN_URL_META ) ) {
+                    delete_post_meta( $post_id, self::MARKDOWN_URL_META );
+                    $removed++;
+                }
+
+                if ( ! $disabled ) {
+                    $missing++;
+                }
             }
+
+            $items[ $post_id ] = [
+                'exists'             => $exists,
+                'disabled'           => $disabled,
+                'permalink'          => $permalink,
+                'markdown_url'       => $exists ? esc_url_raw( $markdown_url ) : '',
+                'markdown_relative'  => $relative_markdown,
+                'post_modified'      => $post_modified,
+                'markdown_modified'  => $md_modified,
+                'stale'              => $is_stale,
+                'encoding'           => $encoding,
+            ];
         }
 
-        $llms_file = wp_normalize_path( $public_root . 'llms.txt' );
-        $has_llms  = self::is_safe_readable_file( $llms_file, $public_root );
+        $llms_health = self::validate_llms_file( $public_root );
+        $has_llms    = ! empty( $llms_health['exists'] );
+        $scanned_at  = time();
+
+        $health = [
+            'scanned_at'          => $scanned_at,
+            'published'           => $checked,
+            'found'               => $found,
+            'missing'             => $missing,
+            'stale'               => $stale,
+            'encoding_issues'     => $encoding_issues,
+            'encoding_warnings'   => $encoding_warnings,
+            'excluded'            => $excluded,
+            'llms'                => $llms_health,
+            'items'               => $items,
+        ];
 
         update_option( self::LLMS_DETECTED_OPTION, $has_llms ? '1' : '0', true );
-        update_option( self::LAST_SCAN_OPTION, time(), false );
+        update_option( self::LAST_SCAN_OPTION, $scanned_at, false );
+        update_option( self::HEALTH_OPTION, $health, false );
 
         return [
-            'checked' => $checked,
-            'found'   => $found,
-            'removed' => $removed,
-            'llms'    => $has_llms,
+            'checked'         => $checked,
+            'found'           => $found,
+            'removed'         => $removed,
+            'missing'         => $missing,
+            'stale'           => $stale,
+            'encoding_issues' => $encoding_issues,
+            'llms'            => $has_llms,
         ];
     }
 
@@ -929,10 +1320,18 @@ final class BL_Markdown_For_Agents {
         $has_llms        = '1' === get_option( self::LLMS_DETECTED_OPTION, '0' );
         $message         = isset( $_GET['bloglogistics_mfa_message'] ) ? sanitize_key( wp_unslash( $_GET['bloglogistics_mfa_message'] ) ) : '';
         $htaccess_status = get_option( self::HTACCESS_STATUS_OPTION, [] );
+        $health          = get_option( self::HEALTH_OPTION, [] );
 
         if ( ! is_array( $htaccess_status ) ) {
             $htaccess_status = [];
         }
+
+        if ( ! is_array( $health ) ) {
+            $health = [];
+        }
+
+        $health_ready = ! empty( $health['scanned_at'] ) && isset( $health['items'] ) && is_array( $health['items'] );
+        $llms_health  = isset( $health['llms'] ) && is_array( $health['llms'] ) ? $health['llms'] : [];
 
         $detected_ids = get_posts(
             [
@@ -953,21 +1352,34 @@ final class BL_Markdown_For_Agents {
         echo '<div class="wrap">';
         echo '<h1>' . esc_html__( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ) . '</h1>';
 
+        echo '<style>
+            .bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;max-width:1100px;margin:12px 0 20px}
+            .bl-mfa-health-card{background:#fff;border:1px solid #c3c4c7;border-radius:3px;padding:14px 16px}
+            .bl-mfa-health-card strong{display:block;font-size:24px;line-height:1.2;margin-bottom:4px}
+            .bl-mfa-health-ok{color:#008a20}.bl-mfa-health-warn{color:#996800}.bl-mfa-health-bad{color:#b32d2e}
+            .bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}
+            .bl-mfa-health-detail{display:block;color:#646970;margin-top:3px}
+        </style>';
+
         echo '<div class="notice notice-info inline"><p><strong>' . esc_html__( 'Editorial control stays with you.', 'bloglogistics-markdown-for-agents' ) . '</strong> ';
-        echo esc_html__( 'This plugin does not create, rewrite, or curate llms.txt or any Markdown file. You create and maintain those files yourself. The plugin only discovers files during a manual admin scan and advertises the files you choose to expose.', 'bloglogistics-markdown-for-agents' );
+        echo esc_html__( 'This plugin does not create, rewrite, or curate llms.txt or any Markdown file. You create and maintain those files yourself. The plugin discovers and validates them only during an administrator-run scan.', 'bloglogistics-markdown-for-agents' );
         echo '</p></div>';
 
         if ( 'scanned' === $message ) {
             $checked = isset( $_GET['checked'] ) ? absint( $_GET['checked'] ) : 0;
             $found   = isset( $_GET['found'] ) ? absint( $_GET['found'] ) : 0;
             $removed = isset( $_GET['removed'] ) ? absint( $_GET['removed'] ) : 0;
+            $stale   = isset( $health['stale'] ) ? (int) $health['stale'] : 0;
+            $encoding_issues = isset( $health['encoding_issues'] ) ? (int) $health['encoding_issues'] : 0;
 
             echo '<div class="notice notice-success is-dismissible"><p>';
             printf(
-                esc_html__( 'Scan complete. Checked %1$d published posts/pages, detected %2$d Markdown companions, and removed %3$d stale Markdown URL fields.', 'bloglogistics-markdown-for-agents' ),
+                esc_html__( 'Scan complete. Checked %1$d published posts/pages, detected %2$d Markdown companions, removed %3$d stale Markdown URL fields, found %4$d possibly stale companions, and found %5$d encoding issues.', 'bloglogistics-markdown-for-agents' ),
                 $checked,
                 $found,
-                $removed
+                $removed,
+                $stale,
+                $encoding_issues
             );
             echo '</p></div>';
         } elseif ( 'exclusions_saved' === $message ) {
@@ -978,12 +1390,197 @@ final class BL_Markdown_For_Agents {
             echo '<div class="notice ' . esc_attr( $notice_class ) . ' is-dismissible"><p>' . esc_html( (string) $htaccess_status['message'] ) . '</p></div>';
         }
 
-        echo '<h2>' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        echo '<h2>' . esc_html__( 'Markdown Health Dashboard', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+
+        if ( ! $health_ready ) {
+            echo '<p>' . esc_html__( 'Run the Markdown scan to populate the health dashboard. The scan checks companion presence, file freshness, UTF-8 encoding, common mojibake patterns, and llms.txt references without changing your Markdown content.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        } else {
+            $published         = isset( $health['published'] ) ? (int) $health['published'] : 0;
+            $found_count       = isset( $health['found'] ) ? (int) $health['found'] : 0;
+            $missing_count     = isset( $health['missing'] ) ? (int) $health['missing'] : 0;
+            $stale_count       = isset( $health['stale'] ) ? (int) $health['stale'] : 0;
+            $encoding_count    = isset( $health['encoding_issues'] ) ? (int) $health['encoding_issues'] : 0;
+            $encoding_warnings = isset( $health['encoding_warnings'] ) ? (int) $health['encoding_warnings'] : 0;
+            $excluded_count    = isset( $health['excluded'] ) ? (int) $health['excluded'] : 0;
+
+            echo '<div class="bl-mfa-health-grid">';
+            echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( $published ) ) . '</strong>' . esc_html__( 'Published posts/pages', 'bloglogistics-markdown-for-agents' ) . '</div>';
+            echo '<div class="bl-mfa-health-card"><strong class="bl-mfa-health-ok">' . esc_html( number_format_i18n( $found_count ) ) . '</strong>' . esc_html__( 'Companions found', 'bloglogistics-markdown-for-agents' ) . '</div>';
+            echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $missing_count ? 'bl-mfa-health-warn' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $missing_count ) ) . '</strong>' . esc_html__( 'Missing companions', 'bloglogistics-markdown-for-agents' ) . '</div>';
+            echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $stale_count ? 'bl-mfa-health-warn' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $stale_count ) ) . '</strong>' . esc_html__( 'Possibly stale', 'bloglogistics-markdown-for-agents' ) . '</div>';
+            echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $encoding_count ? 'bl-mfa-health-bad' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $encoding_count ) ) . '</strong>' . esc_html__( 'Encoding issues', 'bloglogistics-markdown-for-agents' );
+            if ( $encoding_warnings ) {
+                echo '<span class="bl-mfa-health-detail">' . esc_html( sprintf( _n( '%d BOM warning', '%d BOM warnings', $encoding_warnings, 'bloglogistics-markdown-for-agents' ), $encoding_warnings ) ) . '</span>';
+            }
+            echo '</div>';
+            echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( $excluded_count ) ) . '</strong>' . esc_html__( 'Discovery disabled', 'bloglogistics-markdown-for-agents' ) . '</div>';
+            echo '</div>';
+
+            echo '<p class="description">';
+            printf(
+                esc_html__( 'Health snapshot refreshed %s. “Possibly stale” means the WordPress post/page was modified more than 60 seconds after the companion file timestamp. Deployment tools can alter file timestamps, so treat this as a review signal rather than proof that content differs.', 'bloglogistics-markdown-for-agents' ),
+                esc_html( wp_date( 'Y-m-d H:i:s T', (int) $health['scanned_at'] ) )
+            );
+            echo '</p>';
+
+            echo '<h3>' . esc_html__( 'llms.txt Validation', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+            echo '<table class="form-table" role="presentation"><tbody>';
+            $llms_exists = ! empty( $llms_health['exists'] );
+            $llms_valid  = ! empty( $llms_health['valid'] );
+            echo '<tr><th scope="row">' . esc_html__( 'llms.txt', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $llms_exists ? 'bl-mfa-health-ok' : 'bl-mfa-health-warn' ) . '">' . ( $llms_exists ? esc_html__( 'Present', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Missing', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
+            echo '<tr><th scope="row">' . esc_html__( 'Validation', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $llms_valid ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $llms_valid ? esc_html__( 'Passed', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
+
+            $llms_encoding = isset( $llms_health['encoding'] ) && is_array( $llms_health['encoding'] ) ? $llms_health['encoding'] : [];
+            if ( $llms_exists ) {
+                $llms_encoding_valid = ! empty( $llms_encoding['valid'] );
+                $llms_bom            = ! empty( $llms_encoding['bom'] );
+                echo '<tr><th scope="row">' . esc_html__( 'Encoding', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $llms_encoding_valid ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $llms_encoding_valid ? esc_html__( 'Valid UTF-8', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
+                if ( $llms_bom ) {
+                    echo '<span class="bl-mfa-health-detail">' . esc_html__( 'UTF-8 BOM detected.', 'bloglogistics-markdown-for-agents' ) . '</span>';
+                }
+                echo '</td></tr>';
+            }
+
+            echo '<tr><th scope="row">' . esc_html__( 'Local Markdown links checked', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( number_format_i18n( isset( $llms_health['local_links_checked'] ) ? (int) $llms_health['local_links_checked'] : 0 ) ) . '</td></tr>';
+            $broken_count = isset( $llms_health['broken_local_links'] ) && is_array( $llms_health['broken_local_links'] ) ? count( $llms_health['broken_local_links'] ) : 0;
+            echo '<tr><th scope="row">' . esc_html__( 'Broken local Markdown references', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $broken_count ? 'bl-mfa-health-bad' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $broken_count ) ) . '</strong></td></tr>';
+            echo '</tbody></table>';
+
+            $llms_errors   = isset( $llms_health['errors'] ) && is_array( $llms_health['errors'] ) ? $llms_health['errors'] : [];
+            $llms_warnings = isset( $llms_health['warnings'] ) && is_array( $llms_health['warnings'] ) ? $llms_health['warnings'] : [];
+
+            if ( $llms_errors ) {
+                echo '<div class="notice notice-error inline"><p><strong>' . esc_html__( 'llms.txt errors:', 'bloglogistics-markdown-for-agents' ) . '</strong></p><ul style="list-style:disc;margin-left:2em;">';
+                foreach ( $llms_errors as $issue ) {
+                    if ( is_array( $issue ) ) {
+                        echo '<li>' . esc_html( self::llms_issue_label( $issue ) ) . '</li>';
+                    }
+                }
+                echo '</ul></div>';
+            }
+
+            if ( $llms_warnings ) {
+                echo '<div class="notice notice-warning inline"><p><strong>' . esc_html__( 'llms.txt warnings:', 'bloglogistics-markdown-for-agents' ) . '</strong></p><ul style="list-style:disc;margin-left:2em;">';
+                foreach ( $llms_warnings as $issue ) {
+                    if ( is_array( $issue ) ) {
+                        echo '<li>' . esc_html( self::llms_issue_label( $issue ) ) . '</li>';
+                    }
+                }
+                echo '</ul></div>';
+            }
+
+            echo '<h3 style="margin-top:1.5em;">' . esc_html__( 'Content Health', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+            echo '<table class="widefat striped bl-mfa-health-table"><thead><tr>';
+            echo '<th>' . esc_html__( 'Title', 'bloglogistics-markdown-for-agents' ) . '</th>';
+            echo '<th>' . esc_html__( 'Type', 'bloglogistics-markdown-for-agents' ) . '</th>';
+            echo '<th>' . esc_html__( 'Companion', 'bloglogistics-markdown-for-agents' ) . '</th>';
+            echo '<th>' . esc_html__( 'Freshness', 'bloglogistics-markdown-for-agents' ) . '</th>';
+            echo '<th>' . esc_html__( 'Encoding', 'bloglogistics-markdown-for-agents' ) . '</th>';
+            echo '<th>' . esc_html__( 'Discovery', 'bloglogistics-markdown-for-agents' ) . '</th>';
+            echo '</tr></thead><tbody>';
+
+            foreach ( $health['items'] as $post_id => $item ) {
+                $post_id = (int) $post_id;
+
+                if ( ! $post_id || ! is_array( $item ) || ! get_post( $post_id ) ) {
+                    continue;
+                }
+
+                $exists   = ! empty( $item['exists'] );
+                $disabled = ! empty( $item['disabled'] );
+                $is_stale = ! empty( $item['stale'] );
+                $encoding = isset( $item['encoding'] ) && is_array( $item['encoding'] ) ? $item['encoding'] : [];
+                $edit_link = get_edit_post_link( $post_id );
+
+                echo '<tr><td>';
+                if ( $edit_link ) {
+                    echo '<a href="' . esc_url( $edit_link ) . '">' . esc_html( get_the_title( $post_id ) ) . '</a>';
+                } else {
+                    echo esc_html( get_the_title( $post_id ) );
+                }
+                if ( ! empty( $item['markdown_relative'] ) ) {
+                    echo '<span class="bl-mfa-health-detail"><code>/' . esc_html( ltrim( (string) $item['markdown_relative'], '/' ) ) . '</code></span>';
+                }
+                echo '</td>';
+                echo '<td>' . esc_html( get_post_type( $post_id ) ) . '</td>';
+
+                if ( $exists ) {
+                    echo '<td><strong class="bl-mfa-health-ok">' . esc_html__( 'Found', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
+                } elseif ( $disabled ) {
+                    echo '<td><strong>' . esc_html__( 'Excluded', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
+                } else {
+                    echo '<td><strong class="bl-mfa-health-warn">' . esc_html__( 'Missing', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
+                }
+
+                echo '<td>';
+                if ( ! $exists ) {
+                    echo '&mdash;';
+                } elseif ( $is_stale ) {
+                    echo '<strong class="bl-mfa-health-warn">' . esc_html__( 'Possibly stale', 'bloglogistics-markdown-for-agents' ) . '</strong>';
+                    $post_modified = isset( $item['post_modified'] ) ? (int) $item['post_modified'] : 0;
+                    $md_modified   = isset( $item['markdown_modified'] ) ? (int) $item['markdown_modified'] : 0;
+                    if ( $post_modified && $md_modified ) {
+                        echo '<span class="bl-mfa-health-detail">';
+                        printf(
+                            esc_html__( 'Page: %1$s; Markdown: %2$s', 'bloglogistics-markdown-for-agents' ),
+                            esc_html( wp_date( 'Y-m-d H:i', $post_modified ) ),
+                            esc_html( wp_date( 'Y-m-d H:i', $md_modified ) )
+                        );
+                        echo '</span>';
+                    }
+                } else {
+                    echo '<strong class="bl-mfa-health-ok">' . esc_html__( 'Current by timestamp', 'bloglogistics-markdown-for-agents' ) . '</strong>';
+                }
+                echo '</td>';
+
+                echo '<td>';
+                if ( ! $exists ) {
+                    echo '&mdash;';
+                } elseif ( ! empty( $encoding['valid'] ) ) {
+                    echo '<strong class="bl-mfa-health-ok">' . esc_html__( 'Valid UTF-8', 'bloglogistics-markdown-for-agents' ) . '</strong>';
+                    if ( ! empty( $encoding['bom'] ) ) {
+                        echo '<span class="bl-mfa-health-detail">' . esc_html__( 'BOM warning', 'bloglogistics-markdown-for-agents' ) . '</span>';
+                    }
+                } else {
+                    echo '<strong class="bl-mfa-health-bad">' . esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) . '</strong>';
+                    if ( isset( $encoding['issues'] ) && is_array( $encoding['issues'] ) ) {
+                        foreach ( $encoding['issues'] as $issue ) {
+                            echo '<span class="bl-mfa-health-detail">' . esc_html( self::encoding_issue_label( (string) $issue ) ) . '</span>';
+                        }
+                    }
+                }
+                echo '</td>';
+
+                if ( $disabled ) {
+                    echo '<td><strong>' . esc_html__( 'Disabled', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
+                } elseif ( $exists ) {
+                    echo '<td><strong class="bl-mfa-health-ok">' . esc_html__( 'Advertised', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
+                } else {
+                    echo '<td>' . esc_html__( 'Not advertised', 'bloglogistics-markdown-for-agents' ) . '</td>';
+                }
+
+                echo '</tr>';
+            }
+
+            echo '</tbody></table>';
+        }
+
+        echo '<div style="margin-top:1em;">';
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline-block;">';
+        wp_nonce_field( 'bloglogistics_mfa_scan' );
+        echo '<input type="hidden" name="action" value="bloglogistics_mfa_scan">';
+        submit_button( __( 'Scan for Markdown Files and Refresh Health', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
+        echo '</form>';
+        echo '</div>';
+
+        echo '<p class="description">' . esc_html__( 'The scan reads local files only. It does not make external requests for llms.txt link validation and it does not alter Markdown or llms.txt.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<h2 style="margin-top:2em;">' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
         echo '<ol>';
         echo '<li>' . esc_html__( 'You create a carefully curated /llms.txt file and any Markdown companion files you want to publish.', 'bloglogistics-markdown-for-agents' ) . '</li>';
         echo '<li>' . esc_html__( 'For a normal page such as /about-us/, place its companion at /about-us/index.md. The homepage companion is /index.md.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'Run the scan below after files are added, removed, or moved. The scan stores each detected Markdown URL in the WordPress custom field bloglogistics_markdown_url.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'On public page loads, the plugin performs no filesystem checks and generates no Markdown. It only reads the already-stored metadata and outputs discovery markup once for eligible pages.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'Run the scan after files are added, removed, moved, or edited. The scan stores detected Markdown URLs and refreshes the administrator health snapshot.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'On public page loads, the plugin performs no filesystem checks and generates no Markdown. It only reads already-stored metadata and outputs discovery markup once for eligible pages.', 'bloglogistics-markdown-for-agents' ) . '</li>';
         echo '</ol>';
 
         echo '<table class="form-table" role="presentation"><tbody>';
@@ -992,16 +1589,9 @@ final class BL_Markdown_For_Agents {
         echo '<tr><th scope="row">' . esc_html__( 'Last scan', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . ( $last_scan ? esc_html( wp_date( 'Y-m-d H:i:s T', $last_scan ) ) : esc_html__( 'Not yet scanned', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
         echo '</tbody></table>';
 
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-        wp_nonce_field( 'bloglogistics_mfa_scan' );
-        echo '<input type="hidden" name="action" value="bloglogistics_mfa_scan">';
-        submit_button( __( 'Scan for Markdown Files', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
-        echo '</form>';
-
         echo '<h2 style="margin-top:2em;">' . esc_html__( 'WordPress / Markdown Directory Compatibility', 'bloglogistics-markdown-for-agents' ) . '</h2>';
         echo '<p>' . esc_html__( 'Static /slug/index.md companions create real directories. On Apache-compatible servers, the plugin maintains a root .htaccess rule so /slug/ continues to load the WordPress page while /slug/index.md continues to serve the Markdown file.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
-        $htaccess_state = isset( $htaccess_status['state'] ) ? (string) $htaccess_status['state'] : '';
         $file_verified  = ! empty( $htaccess_status['file_verified'] );
         $live_available = ! empty( $htaccess_status['live_available'] );
         $live_verified  = ! empty( $htaccess_status['live_verified'] );
@@ -1172,6 +1762,10 @@ final class BL_Markdown_For_Agents {
                 delete_post_meta( $post_id, self::DISABLED_META );
             }
         }
+
+        // Refresh the administrator-only health snapshot so the dashboard's
+        // discovery-disabled count and per-page status match the saved choices.
+        self::scan_markdown_files();
 
         wp_safe_redirect(
             add_query_arg(
