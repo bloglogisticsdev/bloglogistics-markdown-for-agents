@@ -4,11 +4,11 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Advertises user-curated Markdown companion files and llms.txt for AI agents without generating Markdown or checking the filesystem on public page loads.
+Advertises user-curated Markdown companion files and llms.txt for AI agents, with safe .htaccess compatibility for Markdown companion directories.
 
 == Description ==
 
@@ -26,6 +26,8 @@ Typical file locations are:
 An administrator explicitly runs a scan after Markdown files are added, removed, or moved. The scan checks the filesystem and stores each detected Markdown URL in the WordPress custom field `bloglogistics_markdown_url`.
 
 Normal public page loads do not scan directories, check for files, probe URLs, generate Markdown, or make external requests. The plugin uses the already-stored WordPress metadata and outputs discovery markup once for eligible pages.
+
+On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. Version 2.1.0 safely maintains a root `.htaccess` compatibility rule so the WordPress page and Markdown companion can coexist. Before every `.htaccess` write, the plugin creates a timestamped backup beside the live file. It then reads the file back to confirm the rule was saved and, when a non-homepage companion is available, performs an end-to-end HTTP check of both the WordPress page and its Markdown companion.
 
 Pages that do not have a Markdown companion are automatically ignored.
 
@@ -47,9 +49,10 @@ Those files remain entirely under the site owner's control. This is intentional 
 2. Activate BlogLogistics Markdown for Agents.
 3. Create and upload your curated `llms.txt` and Markdown companion files.
 4. Go to BlogLogistics > Markdown for Agents.
-5. Click **Scan for Markdown Files**.
+5. Click **Scan for Markdown Files**. The scan also verifies the `.htaccess` compatibility rule and runs a live coexistence check when a suitable Markdown companion is available.
 6. Review the detected Markdown companions and optionally disable discovery for specific posts or pages.
-7. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
+7. If needed, use **Install / Repair and Verify .htaccess Rule** on the same screen.
+8. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
 
 == Frequently Asked Questions ==
 
@@ -74,6 +77,21 @@ Yes. Use the **Do not advertise Markdown or llms.txt from this page** option in 
 = Where is the Markdown URL stored? =
 The URL is stored in the WordPress custom field `bloglogistics_markdown_url`. The custom field is registered for posts and pages and is intentionally not hidden.
 
+= Why does the plugin modify .htaccess? =
+A physical `/slug/index.md` file requires a real `/slug/` directory. On Apache-compatible servers, that directory can intercept the normal WordPress `/slug/` permalink and return `Forbidden`. The compatibility rule sends the directory URL to WordPress while leaving `/slug/index.md` available as a static file.
+
+= Does the plugin back up .htaccess before changing it? =
+Yes. Before every write to an existing `.htaccess` file, the plugin creates a timestamped backup beside it, for example `.htaccess.bloglogistics-mfa-backup-20260917-110301`. If the new file cannot be verified after writing, the plugin attempts to restore the original automatically.
+
+= Where is the compatibility rule inserted? =
+If the standard `# BEGIN WordPress` marker exists, the plugin inserts the rule immediately before that WordPress-managed block. If the marker does not exist, the rule is placed at the top of the site's root `.htaccess` file.
+
+= How does the plugin confirm the rule is live? =
+It first reads the saved `.htaccess` file back and confirms that the managed block is present in the correct position. When a detected non-homepage Markdown companion is available, it then requests both the WordPress page and its `/index.md` companion with a cache-busting query parameter. Both must return HTTP 200 for the live coexistence check to pass.
+
+= What happens on Nginx? =
+Nginx does not use `.htaccess`. The plugin does not attempt to create an Apache rule when the server clearly identifies itself as Nginx. The equivalent rewrite must be configured at the Nginx server level.
+
 = Does the plugin still use Accept: text/markdown content negotiation? =
 No. Version 2.0.0 removes dynamic Markdown generation and content negotiation so static, curated Markdown files remain the single source of truth.
 
@@ -95,6 +113,17 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.1.0 =
+* Add automatic `.htaccess` compatibility for physical `/slug/index.md` companion directories on Apache-compatible servers.
+* Insert the compatibility block immediately before `# BEGIN WordPress` when that marker exists, or at the top of the root `.htaccess` file otherwise.
+* Back up the existing `.htaccess` file with a date-and-time suffix before every write.
+* Read the saved `.htaccess` file back and verify that the rule is present in the correct position.
+* Perform a live coexistence check against one detected WordPress page and its Markdown companion when possible.
+* Add an admin status panel showing file verification, live HTTP status codes, the most recent backup, and the last compatibility check time.
+* Add an **Install / Repair and Verify .htaccess Rule** administrator action.
+* Re-check `.htaccess` compatibility after each manual Markdown scan.
+* Leave `.htaccess` compatibility rules and backup files in place on uninstall so existing Markdown directories do not suddenly break WordPress permalinks.
 
 = 2.0.0 =
 * Replace dynamic Markdown generation with discovery of user-curated static Markdown files.

@@ -233,7 +233,7 @@ jobs:
                   "default": f"{icon_base_url}/banner-772x250.png",
               },
               "sections": {
-                  "description": "Advertises user-curated Markdown companion files and llms.txt for AI agents without generating Markdown or checking the filesystem on public page loads.",
+                  "description": "Advertises user-curated Markdown companion files and llms.txt for AI agents, with safe .htaccess compatibility for companion directories on Apache-compatible servers.",
                   "installation": installation_html,
                   "faq": faq_html,
                   "changelog": changelog_html,

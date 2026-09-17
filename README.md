@@ -14,14 +14,40 @@ Users create those files themselves. The plugin only discovers them during an ex
 2. Create any Markdown companion files you want, for example `/about-us/index.md`.
 3. In WordPress, open **BlogLogistics > Markdown for Agents**.
 4. Click **Scan for Markdown Files**.
-5. Review detected companions and disable discovery for any specific page or post if required.
-6. Purge page/CDN caches after changes.
+5. The plugin confirms the Apache-compatible `.htaccess` rule, creates a timestamped backup before any write, and performs a live WordPress-page/Markdown-companion check when possible.
+6. Review detected companions and disable discovery for any specific page or post if required.
+7. Purge page/CDN caches after changes.
 
 ## Performance
 
 Public requests do not scan directories, call `file_exists()`, probe Markdown URLs, make external requests, or generate Markdown.
 
 The scan stores a matching companion URL in the `bloglogistics_markdown_url` custom field. The front end uses the stored WordPress metadata and outputs discovery markup once when appropriate.
+
+## WordPress permalink compatibility
+
+A physical `/about-us/index.md` companion creates a real `/about-us/` directory. On Apache-compatible servers, that directory can prevent WordPress from receiving the normal `/about-us/` request and can produce a plain `Forbidden` response.
+
+Version 2.1.0 maintains this rule in the site's root `.htaccess` file:
+
+```apache
+# ======================================================================
+# Allow WordPress pages to coexist with Markdown companion directories
+# Added by the plugin: BlogLogistics Markdown for Agents
+# ======================================================================
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteCond %{REQUEST_FILENAME}/index.md -f
+    RewriteRule ^.+/?$ index.php [L]
+</IfModule>
+# ======================================================================
+```
+
+If `# BEGIN WordPress` exists, the block is placed immediately before it. Otherwise it is placed at the top of the root `.htaccess` file. Before every write, the current file is backed up with a timestamped filename. The plugin then verifies the saved file and, when possible, performs an end-to-end HTTP check of one WordPress page and its Markdown companion.
+
+The plugin does not remove this rule or its backups on uninstall because doing so while physical Markdown directories remain could immediately break the corresponding WordPress permalinks.
 
 ## Per-page control
 
