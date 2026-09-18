@@ -657,12 +657,15 @@ final class BL_Markdown_For_Agents {
             'html_request_error'            => __( 'The WordPress page request failed.', 'bloglogistics-markdown-for-agents' ),
             'markdown_request_error'        => __( 'The Markdown request failed.', 'bloglogistics-markdown-for-agents' ),
             'html_status'                   => __( 'The WordPress page did not return HTTP 200.', 'bloglogistics-markdown-for-agents' ),
-            'markdown_status'               => __( 'The Markdown companion did not return HTTP 200.', 'bloglogistics-markdown-for-agents' ),
-            'markdown_mime'                 => __( 'The Markdown companion returned an incorrect or missing Content-Type.', 'bloglogistics-markdown-for-agents' ),
+            'markdown_status'               => __( 'The Markdown file did not return HTTP 200.', 'bloglogistics-markdown-for-agents' ),
+            'markdown_mime'                 => __( 'The Markdown file returned an incorrect or missing Content-Type.', 'bloglogistics-markdown-for-agents' ),
             'missing_markdown_discovery'    => __( 'The expected rel="alternate" Markdown discovery link was not found.', 'bloglogistics-markdown-for-agents' ),
             'unexpected_markdown_discovery' => __( 'A Markdown discovery link is still present even though discovery is disabled.', 'bloglogistics-markdown-for-agents' ),
             'missing_llms_discovery'        => __( 'The expected llms.txt rel="describedby" link was not found.', 'bloglogistics-markdown-for-agents' ),
             'unexpected_llms_discovery'     => __( 'An llms.txt discovery link is present when it is not expected.', 'bloglogistics-markdown-for-agents' ),
+            'stale_cached_discovery'        => __( 'Cached HTML appears stale; current uncached HTML contains the expected discovery links.', 'bloglogistics-markdown-for-agents' ),
+            'discovery_recheck_failed'      => __( 'Discovery could not be confirmed with a cache-busting recheck.', 'bloglogistics-markdown-for-agents' ),
+            'redirected'                    => __( 'A live endpoint redirected before returning its final response.', 'bloglogistics-markdown-for-agents' ),
             default                         => __( 'Unknown live verification issue.', 'bloglogistics-markdown-for-agents' ),
         };
     }
@@ -779,9 +782,11 @@ final class BL_Markdown_For_Agents {
      *
      * @return array<string,mixed>
      */
-    private static function live_request( string $url, int $response_limit ): array {
+    private static function live_request( string $url, int $response_limit, bool $bypass_cache = false ): array {
         $result = [
             'url'            => $url,
+            'requested_url'  => $url,
+            'cache_bypass'   => $bypass_cache,
             'initial_status' => 0,
             'status'         => 0,
             'redirected'     => false,
@@ -795,16 +800,24 @@ final class BL_Markdown_For_Agents {
             return $result;
         }
 
-        $token    = rawurlencode( (string) time() . '-' . (string) wp_rand( 100000, 999999 ) );
-        $test_url = add_query_arg( 'bloglogistics_mfa_live', $token, $url );
-        $common   = [
+        $test_url = $url;
+        $headers  = [];
+
+        if ( $bypass_cache ) {
+            $token    = rawurlencode( (string) time() . '-' . (string) wp_rand( 100000, 999999 ) );
+            $test_url = add_query_arg( 'bloglogistics_mfa_live', $token, $url );
+            $headers  = [
+                'Cache-Control' => 'no-cache, no-store, max-age=0',
+                'Pragma'        => 'no-cache',
+            ];
+        }
+
+        $result['requested_url'] = $test_url;
+        $common = [
             'timeout'             => 12,
             'reject_unsafe_urls'  => true,
             'limit_response_size' => $response_limit,
-            'headers'             => [
-                'Cache-Control' => 'no-cache',
-                'Pragma'        => 'no-cache',
-            ],
+            'headers'             => $headers,
             'user-agent'          => 'Mozilla/5.0 (compatible; BlogLogistics-MFA-Live-Verification/' . BLOGLOGISTICS_MFA_VERSION . '; +' . home_url( '/' ) . ')',
         ];
 
@@ -850,32 +863,46 @@ final class BL_Markdown_For_Agents {
         $checked_at   = time();
 
         $result = [
-            'post_id'              => $post_id,
-            'checked_at'           => $checked_at,
-            'html_url'             => is_string( $html_url ) ? $html_url : '',
-            'markdown_url'         => $markdown_url,
-            'disabled'             => $disabled,
-            'html_initial_status'  => 0,
-            'html_status'          => 0,
-            'html_redirected'      => false,
+            'post_id'                 => $post_id,
+            'checked_at'              => $checked_at,
+            'html_url'                => is_string( $html_url ) ? $html_url : '',
+            'markdown_url'            => $markdown_url,
+            'disabled'                => $disabled,
+            'html_initial_status'     => 0,
+            'html_status'             => 0,
+            'html_redirected'         => false,
             'markdown_initial_status' => 0,
-            'markdown_status'      => 0,
-            'markdown_redirected'  => false,
-            'content_type'         => '',
-            'mime_state'           => 'bad',
-            'discovery'            => [],
-            'issues'               => [],
-            'warnings'             => [],
-            'passed'               => false,
+            'markdown_status'         => 0,
+            'markdown_redirected'     => false,
+            'content_type'            => '',
+            'mime_state'              => 'bad',
+            'expect_markdown'         => ! $disabled,
+            'expect_llms'             => ! $disabled && $has_llms,
+            'discovery'               => [],
+            'discovery_fresh'         => [],
+            'discovery_cache_state'   => 'not_checked',
+            'discovery_recheck_status'=> 0,
+            'delivery_issues'         => [],
+            'delivery_warnings'       => [],
+            'discovery_issues'        => [],
+            'discovery_warnings'      => [],
+            'issues'                  => [],
+            'warnings'                => [],
+            'delivery_passed'         => false,
+            'discovery_passed'        => false,
+            'passed'                  => false,
+            'outdated'                => false,
         ];
 
         if ( ! is_string( $html_url ) || '' === $html_url || '' === $markdown_url ) {
-            $result['issues'][] = 'missing_stored_url';
+            $result['delivery_issues'][] = 'missing_stored_url';
+            $result['issues']            = $result['delivery_issues'];
             return $result;
         }
 
-        $html = self::live_request( $html_url, 1048576 );
-        $md   = self::live_request( $markdown_url, 131072 );
+        // First test the canonical public URLs exactly as an agent would receive them.
+        $html = self::live_request( $html_url, 1048576, false );
+        $md   = self::live_request( $markdown_url, 131072, false );
 
         $result['html_initial_status']     = (int) $html['initial_status'];
         $result['html_status']             = (int) $html['status'];
@@ -887,48 +914,82 @@ final class BL_Markdown_For_Agents {
         $result['mime_state']              = self::markdown_mime_state( (string) $md['content_type'] );
 
         if ( '' !== (string) $html['error'] ) {
-            $result['issues'][] = 'html_request_error';
-            $result['html_error'] = (string) $html['error'];
+            $result['delivery_issues'][] = 'html_request_error';
+            $result['html_error']        = (string) $html['error'];
         } elseif ( 200 !== (int) $html['status'] ) {
-            $result['issues'][] = 'html_status';
+            $result['delivery_issues'][] = 'html_status';
         }
 
         if ( '' !== (string) $md['error'] ) {
-            $result['issues'][] = 'markdown_request_error';
-            $result['markdown_error'] = (string) $md['error'];
+            $result['delivery_issues'][] = 'markdown_request_error';
+            $result['markdown_error']    = (string) $md['error'];
         } elseif ( 200 !== (int) $md['status'] ) {
-            $result['issues'][] = 'markdown_status';
+            $result['delivery_issues'][] = 'markdown_status';
         }
 
         if ( 200 === (int) $md['status'] ) {
             if ( 'bad' === $result['mime_state'] ) {
-                $result['issues'][] = 'markdown_mime';
+                $result['delivery_issues'][] = 'markdown_mime';
             } elseif ( 'warning' === $result['mime_state'] ) {
-                $result['warnings'][] = 'markdown_mime';
-            }
-        }
-
-        if ( 200 === (int) $html['status'] ) {
-            $expect_discovery    = ! $disabled;
-            $result['discovery'] = self::verify_discovery_markup(
-                (string) $html['body'],
-                $markdown_url,
-                $expect_discovery,
-                $expect_discovery && $has_llms
-            );
-
-            foreach ( $result['discovery']['issues'] as $issue ) {
-                $result['issues'][] = (string) $issue;
+                $result['delivery_warnings'][] = 'markdown_mime';
             }
         }
 
         if ( $result['html_redirected'] || $result['markdown_redirected'] ) {
-            $result['warnings'][] = 'redirected';
+            $result['delivery_warnings'][] = 'redirected';
         }
 
-        $result['issues']   = array_values( array_unique( $result['issues'] ) );
-        $result['warnings'] = array_values( array_unique( $result['warnings'] ) );
-        $result['passed']   = empty( $result['issues'] );
+        if ( 200 === (int) $html['status'] ) {
+            $result['discovery'] = self::verify_discovery_markup(
+                (string) $html['body'],
+                $markdown_url,
+                (bool) $result['expect_markdown'],
+                (bool) $result['expect_llms']
+            );
+
+            if ( ! empty( $result['discovery']['passed'] ) ) {
+                $result['discovery_cache_state'] = 'canonical';
+            } else {
+                // If canonical HTML is missing expected markup, retry once with a
+                // unique query string and no-cache request headers. This separates
+                // genuinely missing discovery markup from stale page/CDN HTML.
+                $fresh_html = self::live_request( $html_url, 1048576, true );
+                $result['discovery_recheck_status'] = (int) $fresh_html['status'];
+
+                if ( '' === (string) $fresh_html['error'] && 200 === (int) $fresh_html['status'] ) {
+                    $result['discovery_fresh'] = self::verify_discovery_markup(
+                        (string) $fresh_html['body'],
+                        $markdown_url,
+                        (bool) $result['expect_markdown'],
+                        (bool) $result['expect_llms']
+                    );
+
+                    if ( ! empty( $result['discovery_fresh']['passed'] ) ) {
+                        $result['discovery_cache_state'] = 'stale_cache';
+                        $result['discovery_warnings'][]  = 'stale_cached_discovery';
+                    } else {
+                        $result['discovery_cache_state'] = 'missing';
+                        $result['discovery_issues']      = array_values( array_map( 'strval', (array) $result['discovery_fresh']['issues'] ) );
+                    }
+                } else {
+                    $result['discovery_cache_state'] = 'recheck_failed';
+                    $result['discovery_warnings'][]  = 'discovery_recheck_failed';
+                    if ( '' !== (string) $fresh_html['error'] ) {
+                        $result['discovery_recheck_error'] = (string) $fresh_html['error'];
+                    }
+                }
+            }
+        }
+
+        $result['delivery_issues']    = array_values( array_unique( $result['delivery_issues'] ) );
+        $result['delivery_warnings']  = array_values( array_unique( $result['delivery_warnings'] ) );
+        $result['discovery_issues']   = array_values( array_unique( $result['discovery_issues'] ) );
+        $result['discovery_warnings'] = array_values( array_unique( $result['discovery_warnings'] ) );
+        $result['issues']             = array_values( array_unique( array_merge( $result['delivery_issues'], $result['discovery_issues'] ) ) );
+        $result['warnings']           = array_values( array_unique( array_merge( $result['delivery_warnings'], $result['discovery_warnings'] ) ) );
+        $result['delivery_passed']    = empty( $result['delivery_issues'] );
+        $result['discovery_passed']   = empty( $result['discovery_issues'] );
+        $result['passed']             = $result['delivery_passed'] && $result['discovery_passed'];
 
         return $result;
     }
@@ -974,12 +1035,14 @@ final class BL_Markdown_For_Agents {
         $health           = get_option( self::HEALTH_OPTION, [] );
         $health           = is_array( $health ) ? $health : [];
         $previous_live    = isset( $health['live'] ) && is_array( $health['live'] ) ? $health['live'] : [];
+        $health_items      = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
         $live_items       = $only_ids && isset( $previous_live['items'] ) && is_array( $previous_live['items'] )
             ? $previous_live['items']
             : [];
 
         $checked            = 0;
         $passed             = 0;
+        $reviewed           = 0;
         $failed             = 0;
         $mime_warnings      = 0;
         $mime_failures      = 0;
@@ -989,13 +1052,19 @@ final class BL_Markdown_For_Agents {
 
         foreach ( $post_ids as $post_id ) {
             $item = self::verify_live_item( (int) $post_id, $has_llms );
+            $scan_item = isset( $health_items[ (int) $post_id ] ) && is_array( $health_items[ (int) $post_id ] ) ? $health_items[ (int) $post_id ] : [];
+            $item['scan_signature'] = isset( $scan_item['scan_signature'] ) ? (string) $scan_item['scan_signature'] : '';
+            $item['outdated']       = false;
+            unset( $item['outdated_at'] );
             $live_items[ (int) $post_id ] = $item;
             $checked++;
 
-            if ( ! empty( $item['passed'] ) ) {
-                $passed++;
-            } else {
+            if ( ! empty( $item['issues'] ) ) {
                 $failed++;
+            } elseif ( ! empty( $item['warnings'] ) ) {
+                $reviewed++;
+            } else {
+                $passed++;
             }
 
             if ( 200 === (int) ( $item['markdown_status'] ?? 0 ) ) {
@@ -1006,7 +1075,7 @@ final class BL_Markdown_For_Agents {
                 }
             }
 
-            if ( isset( $item['discovery']['passed'] ) && ! $item['discovery']['passed'] ) {
+            if ( ! empty( $item['discovery_issues'] ) ) {
                 $discovery_failures++;
             }
 
@@ -1020,19 +1089,28 @@ final class BL_Markdown_For_Agents {
             }
         }
 
+        $outdated_count = 0;
+        foreach ( $live_items as $saved_live_item ) {
+            if ( is_array( $saved_live_item ) && ! empty( $saved_live_item['outdated'] ) ) {
+                $outdated_count++;
+            }
+        }
+
         $live = [
             'verified_at'        => time(),
             'scope'              => $only_ids ? 'selected' : 'all',
             'candidate_count'    => $total_candidates,
             'checked'            => $checked,
             'passed'             => $passed,
+            'reviewed'           => $reviewed,
             'failed'             => $failed,
             'mime_warnings'      => $mime_warnings,
             'mime_failures'      => $mime_failures,
             'discovery_failures' => $discovery_failures,
             'redirected'         => $redirected,
             'request_errors'     => $request_errors,
-            'truncated'          => $truncated,
+            'outdated_count'      => $outdated_count,
+            'truncated'           => $truncated,
             'items'              => $live_items,
         ];
 
@@ -1503,7 +1581,7 @@ final class BL_Markdown_For_Agents {
                 'markdown_status'       => 0,
                 'markdown_content_type' => '',
                 'mime_live_verified'    => false,
-                'message'               => __( 'The .htaccess rules are present, but no non-homepage Markdown companion is currently recorded for an end-to-end live test. Run the Markdown scan after uploading companion files.', 'bloglogistics-markdown-for-agents' ),
+                'message'               => __( 'The .htaccess rules are present, but no non-homepage Markdown file is currently recorded for an end-to-end live test. Run the Markdown scan after uploading Markdown files.', 'bloglogistics-markdown-for-agents' ),
             ];
         }
 
@@ -1569,11 +1647,11 @@ final class BL_Markdown_For_Agents {
         $passed                = $http_passed && $mime_live_verified;
 
         if ( $passed ) {
-            $message = __( 'Live verification passed: the WordPress page and Markdown companion returned HTTP 200, and the Markdown companion returned the preferred text/markdown Content-Type.', 'bloglogistics-markdown-for-agents' );
+            $message = __( 'Live verification passed: the WordPress page and Markdown file returned HTTP 200, and the Markdown file returned the preferred text/markdown Content-Type.', 'bloglogistics-markdown-for-agents' );
         } elseif ( ! $http_passed ) {
             $message = sprintf(
                 /* translators: 1: HTML status code, 2: Markdown status code. */
-                __( 'Live verification did not pass. The WordPress page returned HTTP %1$d and the Markdown companion returned HTTP %2$d.', 'bloglogistics-markdown-for-agents' ),
+                __( 'Live verification did not pass. The WordPress page returned HTTP %1$d and the Markdown file returned HTTP %2$d.', 'bloglogistics-markdown-for-agents' ),
                 $html_status,
                 $markdown_status
             );
@@ -1584,7 +1662,7 @@ final class BL_Markdown_For_Agents {
 
             $message = sprintf(
                 /* translators: %s: Content-Type response header or no-header label. */
-                __( 'Both endpoints returned HTTP 200, but the Markdown MIME rule is not live yet. The Markdown companion returned: %s.', 'bloglogistics-markdown-for-agents' ),
+                __( 'Both endpoints returned HTTP 200, but the Markdown MIME rule is not live yet. The Markdown file returned: %s.', 'bloglogistics-markdown-for-agents' ),
                 $content_type_label
             );
         }
@@ -2016,8 +2094,42 @@ final class BL_Markdown_For_Agents {
             'items'               => $items,
         ];
 
-        if ( 0 === $changed && isset( $previous_health['live'] ) && is_array( $previous_health['live'] ) ) {
-            $health['live'] = $previous_health['live'];
+        if ( isset( $previous_health['live'] ) && is_array( $previous_health['live'] ) ) {
+            $previous_live       = $previous_health['live'];
+            $previous_live_items = isset( $previous_live['items'] ) && is_array( $previous_live['items'] ) ? $previous_live['items'] : [];
+            $preserved_live      = [];
+            $outdated_count      = 0;
+            $llms_expectation_changed = ( ! empty( $previous_llms['exists'] ) ) !== $llms_exists;
+
+            foreach ( $items as $post_id => $current_item ) {
+                $post_id = (int) $post_id;
+                if ( ! isset( $previous_live_items[ $post_id ] ) || ! is_array( $previous_live_items[ $post_id ] ) ) {
+                    continue;
+                }
+
+                $live_item          = $previous_live_items[ $post_id ];
+                $verified_signature = isset( $live_item['scan_signature'] ) ? (string) $live_item['scan_signature'] : '';
+                if ( '' === $verified_signature && isset( $previous_items[ $post_id ]['scan_signature'] ) ) {
+                    $verified_signature = (string) $previous_items[ $post_id ]['scan_signature'];
+                }
+                $current_signature = isset( $current_item['scan_signature'] ) ? (string) $current_item['scan_signature'] : '';
+                $signature_changed = '' === $verified_signature || '' === $current_signature || ! hash_equals( $verified_signature, $current_signature );
+
+                if ( $llms_expectation_changed || $signature_changed || ! empty( $live_item['outdated'] ) ) {
+                    $live_item['outdated']    = true;
+                    $live_item['outdated_at'] = $scanned_at;
+                    $outdated_count++;
+                } else {
+                    $live_item['outdated'] = false;
+                    unset( $live_item['outdated_at'] );
+                }
+
+                $preserved_live[ $post_id ] = $live_item;
+            }
+
+            $previous_live['items']          = $preserved_live;
+            $previous_live['outdated_count'] = $outdated_count;
+            $health['live']                  = $previous_live;
         }
 
         update_option( self::LLMS_DETECTED_OPTION, $has_llms ? '1' : '0', true );
@@ -2090,7 +2202,7 @@ final class BL_Markdown_For_Agents {
     private static function settings_view(): string {
         $view = isset( $_GET['view'] ) ? sanitize_key( wp_unslash( $_GET['view'] ) ) : 'all';
 
-        return in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'disabled' ], true ) ? $view : 'all';
+        return in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'discovery', 'disabled' ], true ) ? $view : 'all';
     }
 
     private static function settings_url( string $tab = 'overview', string $view = 'all', array $extra = [] ): string {
@@ -2124,7 +2236,7 @@ final class BL_Markdown_For_Agents {
             $tab = $default_tab;
         }
 
-        if ( ! in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'disabled' ], true ) ) {
+        if ( ! in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'discovery', 'disabled' ], true ) ) {
             $view = $default_view;
         }
 
@@ -2183,28 +2295,60 @@ final class BL_Markdown_For_Agents {
         $enc_bad  = $exists && ! empty( $encoding ) && empty( $encoding['valid'] );
         $enc_bom  = $exists && ! $enc_bad && ! empty( $encoding['bom'] );
         $live     = ! empty( $live_item );
-        $live_bad = $live && empty( $live_item['passed'] );
-        $warnings = $live && isset( $live_item['warnings'] ) && is_array( $live_item['warnings'] ) ? $live_item['warnings'] : [];
-        $live_review = $live && ! $live_bad && ! empty( $warnings );
-        $missing     = $scanned && ! $exists && ! $disabled;
-        $attention   = $missing || $stale || $enc_bad || $enc_bom || $live_bad || $live_review;
+        $outdated = $live && ! empty( $live_item['outdated'] );
+
+        $discovery_codes = [
+            'missing_markdown_discovery',
+            'unexpected_markdown_discovery',
+            'missing_llms_discovery',
+            'unexpected_llms_discovery',
+        ];
+        $all_issues   = $live && isset( $live_item['issues'] ) && is_array( $live_item['issues'] ) ? array_values( array_map( 'strval', $live_item['issues'] ) ) : [];
+        $all_warnings = $live && isset( $live_item['warnings'] ) && is_array( $live_item['warnings'] ) ? array_values( array_map( 'strval', $live_item['warnings'] ) ) : [];
+
+        $delivery_issues = isset( $live_item['delivery_issues'] ) && is_array( $live_item['delivery_issues'] )
+            ? array_values( array_map( 'strval', $live_item['delivery_issues'] ) )
+            : array_values( array_diff( $all_issues, $discovery_codes ) );
+        $discovery_issues = isset( $live_item['discovery_issues'] ) && is_array( $live_item['discovery_issues'] )
+            ? array_values( array_map( 'strval', $live_item['discovery_issues'] ) )
+            : array_values( array_intersect( $all_issues, $discovery_codes ) );
+        $delivery_warnings = isset( $live_item['delivery_warnings'] ) && is_array( $live_item['delivery_warnings'] )
+            ? array_values( array_map( 'strval', $live_item['delivery_warnings'] ) )
+            : array_values( array_diff( $all_warnings, [ 'stale_cached_discovery', 'discovery_recheck_failed' ] ) );
+        $discovery_warnings = isset( $live_item['discovery_warnings'] ) && is_array( $live_item['discovery_warnings'] )
+            ? array_values( array_map( 'strval', $live_item['discovery_warnings'] ) )
+            : array_values( array_intersect( $all_warnings, [ 'stale_cached_discovery', 'discovery_recheck_failed' ] ) );
+
+        $live_bad         = $live && ! $outdated && ! empty( $delivery_issues );
+        $live_review      = $live && ( $outdated || ( ! $live_bad && ! empty( $delivery_warnings ) ) );
+        $discovery_bad    = $live && ! $outdated && ! empty( $discovery_issues );
+        $discovery_review = $live && ( $outdated || ( ! $discovery_bad && ! empty( $discovery_warnings ) ) );
+        $missing          = $scanned && ! $exists && ! $disabled;
+        $attention        = $missing || $stale || $enc_bad || $enc_bom || $live_bad || $live_review || $discovery_bad || $discovery_review;
 
         return [
-            'scanned'       => $scanned,
-            'exists'        => $exists,
-            'disabled'      => $disabled,
-            'missing'       => $missing,
-            'stale'         => $stale,
-            'encoding'      => $encoding,
-            'encoding_bad'  => $enc_bad,
-            'encoding_bom'  => $enc_bom,
-            'live'          => $live,
-            'live_bad'      => $live_bad,
-            'live_review'   => $live_review,
-            'attention'     => $attention,
-            'item'          => $item,
-            'live_item'     => $live_item,
-            'markdown_url'  => $exists && ! empty( $item['markdown_url'] ) ? (string) $item['markdown_url'] : (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true ),
+            'scanned'            => $scanned,
+            'exists'             => $exists,
+            'disabled'           => $disabled,
+            'missing'            => $missing,
+            'stale'              => $stale,
+            'encoding'           => $encoding,
+            'encoding_bad'       => $enc_bad,
+            'encoding_bom'       => $enc_bom,
+            'live'               => $live,
+            'live_outdated'      => $outdated,
+            'live_bad'           => $live_bad,
+            'live_review'        => $live_review,
+            'delivery_issues'    => $delivery_issues,
+            'delivery_warnings'  => $delivery_warnings,
+            'discovery_bad'      => $discovery_bad,
+            'discovery_review'   => $discovery_review,
+            'discovery_issues'   => $discovery_issues,
+            'discovery_warnings' => $discovery_warnings,
+            'attention'          => $attention,
+            'item'               => $item,
+            'live_item'          => $live_item,
+            'markdown_url'       => $exists && ! empty( $item['markdown_url'] ) ? (string) $item['markdown_url'] : (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true ),
         ];
     }
 
@@ -2220,6 +2364,7 @@ final class BL_Markdown_For_Agents {
             'stale'     => ! empty( $state['stale'] ),
             'encoding'  => ! empty( $state['encoding_bad'] ) || ! empty( $state['encoding_bom'] ),
             'live'      => ! empty( $state['live_bad'] ) || ! empty( $state['live_review'] ),
+            'discovery' => ! empty( $state['discovery_bad'] ) || ! empty( $state['discovery_review'] ),
             'disabled'  => ! empty( $state['disabled'] ),
             default     => true,
         };
@@ -2235,23 +2380,28 @@ final class BL_Markdown_For_Agents {
      */
     private static function content_filter_counts( array $ids, array $health, array $live_items ): array {
         $counts = [
-            'all'       => count( $ids ),
-            'attention' => 0,
-            'problems'  => 0,
-            'reviews'   => 0,
-            'missing'   => 0,
-            'stale'     => 0,
-            'encoding'  => 0,
-            'live'      => 0,
-            'disabled'  => 0,
-            'found'     => 0,
+            'all'                => count( $ids ),
+            'attention'          => 0,
+            'problems'           => 0,
+            'reviews'            => 0,
+            'missing'            => 0,
+            'stale'              => 0,
+            'encoding'           => 0,
+            'live'               => 0,
+            'live_problems'      => 0,
+            'live_reviews'       => 0,
+            'discovery'          => 0,
+            'discovery_problems' => 0,
+            'discovery_reviews'  => 0,
+            'disabled'           => 0,
+            'found'              => 0,
         ];
         $items = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
 
         foreach ( $ids as $post_id ) {
-            $item       = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
-            $live_item  = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
-            $state      = self::content_item_state( (int) $post_id, $item, $live_item );
+            $item      = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
+            $live_item = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
+            $state     = self::content_item_state( (int) $post_id, $item, $live_item );
 
             foreach ( [ 'attention', 'missing', 'stale', 'disabled' ] as $key ) {
                 if ( ! empty( $state[ $key ] ) ) {
@@ -2266,9 +2416,23 @@ final class BL_Markdown_For_Agents {
             if ( ! empty( $state['live_bad'] ) || ! empty( $state['live_review'] ) ) {
                 $counts['live']++;
             }
+            if ( ! empty( $state['live_bad'] ) ) {
+                $counts['live_problems']++;
+            } elseif ( ! empty( $state['live_review'] ) ) {
+                $counts['live_reviews']++;
+            }
 
-            $has_problem = ! empty( $state['missing'] ) || ! empty( $state['encoding_bad'] ) || ! empty( $state['live_bad'] );
-            $has_review  = ! empty( $state['stale'] ) || ! empty( $state['encoding_bom'] ) || ! empty( $state['live_review'] );
+            if ( ! empty( $state['discovery_bad'] ) || ! empty( $state['discovery_review'] ) ) {
+                $counts['discovery']++;
+            }
+            if ( ! empty( $state['discovery_bad'] ) ) {
+                $counts['discovery_problems']++;
+            } elseif ( ! empty( $state['discovery_review'] ) ) {
+                $counts['discovery_reviews']++;
+            }
+
+            $has_problem = ! empty( $state['missing'] ) || ! empty( $state['encoding_bad'] ) || ! empty( $state['live_bad'] ) || ! empty( $state['discovery_bad'] );
+            $has_review  = ! empty( $state['stale'] ) || ! empty( $state['encoding_bom'] ) || ! empty( $state['live_review'] ) || ! empty( $state['discovery_review'] );
 
             if ( $has_problem ) {
                 $counts['problems']++;
@@ -2293,6 +2457,79 @@ final class BL_Markdown_For_Agents {
         }
 
         return $html;
+    }
+
+    /**
+     * Human-readable detail for the public HTML/Markdown delivery check.
+     *
+     * @param array<string,mixed> $live_item Saved live verification item.
+     */
+    private static function live_delivery_detail( array $live_item ): string {
+        $detail = sprintf(
+            __( 'HTML %1$d; Markdown %2$d', 'bloglogistics-markdown-for-agents' ),
+            (int) ( $live_item['html_status'] ?? 0 ),
+            (int) ( $live_item['markdown_status'] ?? 0 )
+        );
+        $mime_label = self::markdown_mime_label( (string) ( $live_item['mime_state'] ?? 'bad' ), (string) ( $live_item['content_type'] ?? '' ) );
+        if ( '' !== $mime_label ) {
+            $detail .= '; ' . $mime_label;
+        }
+
+        return $detail;
+    }
+
+    /**
+     * Human-readable detail for HTML head discovery checks.
+     *
+     * @param array<string,mixed> $live_item Saved live verification item.
+     */
+    private static function discovery_detail( array $live_item ): string {
+        $disabled        = ! empty( $live_item['disabled'] );
+        $expect_markdown = array_key_exists( 'expect_markdown', $live_item ) ? (bool) $live_item['expect_markdown'] : ! $disabled;
+        $expect_llms     = array_key_exists( 'expect_llms', $live_item ) ? (bool) $live_item['expect_llms'] : ( ! $disabled && '1' === get_option( self::LLMS_DETECTED_OPTION, '0' ) );
+        $canonical       = isset( $live_item['discovery'] ) && is_array( $live_item['discovery'] ) ? $live_item['discovery'] : [];
+        $fresh           = isset( $live_item['discovery_fresh'] ) && is_array( $live_item['discovery_fresh'] ) ? $live_item['discovery_fresh'] : [];
+        $cache_state     = isset( $live_item['discovery_cache_state'] ) ? (string) $live_item['discovery_cache_state'] : '';
+        $effective       = 'stale_cache' === $cache_state && $fresh ? $fresh : $canonical;
+        $parts           = [];
+
+        if ( $disabled ) {
+            if ( 'stale_cache' === $cache_state ) {
+                return __( 'Discovery is disabled; current HTML no longer advertises the links, but cached HTML appears stale', 'bloglogistics-markdown-for-agents' );
+            }
+            if ( ! empty( $canonical['markdown_found'] ) || ! empty( $canonical['llms_found'] ) || ! empty( $fresh['markdown_found'] ) || ! empty( $fresh['llms_found'] ) ) {
+                return __( 'Discovery is disabled, but discovery links are still present in live HTML', 'bloglogistics-markdown-for-agents' );
+            }
+            return __( 'Discovery is disabled and no plugin discovery links were found', 'bloglogistics-markdown-for-agents' );
+        }
+
+        if ( $expect_markdown ) {
+            if ( 'stale_cache' === $cache_state && ! empty( $fresh['markdown_found'] ) && empty( $canonical['markdown_found'] ) ) {
+                $parts[] = __( 'Markdown discovery found in current HTML; cached HTML was stale', 'bloglogistics-markdown-for-agents' );
+            } else {
+                $parts[] = ! empty( $effective['markdown_found'] )
+                    ? __( 'Markdown discovery found', 'bloglogistics-markdown-for-agents' )
+                    : __( 'Markdown discovery missing', 'bloglogistics-markdown-for-agents' );
+            }
+        }
+
+        if ( $expect_llms ) {
+            if ( 'stale_cache' === $cache_state && ! empty( $fresh['llms_found'] ) && empty( $canonical['llms_found'] ) ) {
+                $parts[] = __( 'llms.txt discovery found in current HTML; cached HTML was stale', 'bloglogistics-markdown-for-agents' );
+            } else {
+                $parts[] = ! empty( $effective['llms_found'] )
+                    ? __( 'llms.txt discovery found', 'bloglogistics-markdown-for-agents' )
+                    : __( 'llms.txt discovery missing', 'bloglogistics-markdown-for-agents' );
+            }
+        } elseif ( ! $disabled ) {
+            $parts[] = __( 'llms.txt discovery is not expected because llms.txt was not detected', 'bloglogistics-markdown-for-agents' );
+        }
+
+        if ( 'recheck_failed' === $cache_state ) {
+            $parts[] = __( 'Cache-busting recheck could not be completed', 'bloglogistics-markdown-for-agents' );
+        }
+
+        return implode( '; ', $parts );
     }
 
     /**
@@ -2387,7 +2624,12 @@ final class BL_Markdown_For_Agents {
         $missing      = $page_counts['missing'] + $post_counts['missing'];
         $stale        = $page_counts['stale'] + $post_counts['stale'];
         $encoding     = $page_counts['encoding'] + $post_counts['encoding'];
-        $live_issues  = $page_counts['live'] + $post_counts['live'];
+        $live_issues       = $page_counts['live'] + $post_counts['live'];
+        $live_problems     = $page_counts['live_problems'] + $post_counts['live_problems'];
+        $live_reviews      = $page_counts['live_reviews'] + $post_counts['live_reviews'];
+        $discovery_issues  = $page_counts['discovery'] + $post_counts['discovery'];
+        $discovery_problems = $page_counts['discovery_problems'] + $post_counts['discovery_problems'];
+        $discovery_reviews = $page_counts['discovery_reviews'] + $post_counts['discovery_reviews'];
         $disabled     = $page_counts['disabled'] + $post_counts['disabled'];
         $found        = $page_counts['found'] + $post_counts['found'];
         $encoding_bad = isset( $health['encoding_issues'] ) ? (int) $health['encoding_issues'] : 0;
@@ -2402,7 +2644,7 @@ final class BL_Markdown_For_Agents {
         echo '</div>';
 
         if ( ! $health_ready ) {
-            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'Run the Markdown scan to populate health information. The scan checks companion presence, freshness, UTF-8 encoding, common mojibake patterns, and llms.txt references without changing your Markdown content.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'Run the Markdown scan to populate health information. The scan checks Markdown file presence, freshness, UTF-8 encoding, common mojibake patterns, and llms.txt references without changing your Markdown content.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
         }
 
         echo '<div class="bl-mfa-health-grid">';
@@ -2421,7 +2663,7 @@ final class BL_Markdown_For_Agents {
             ! $health_ready ? __( 'Not scanned yet', 'bloglogistics-markdown-for-agents' ) : ( $post_counts['attention'] ? sprintf( _n( '%d needs attention', '%d need attention', $post_counts['attention'], 'bloglogistics-markdown-for-agents' ), $post_counts['attention'] ) : __( 'No saved issues', 'bloglogistics-markdown-for-agents' ) )
         );
         self::render_dashboard_card(
-            __( 'Companions found', 'bloglogistics-markdown-for-agents' ),
+            __( 'Markdown files found', 'bloglogistics-markdown-for-agents' ),
             $found,
             $health_ready ? 'healthy' : 'na',
             [
@@ -2430,7 +2672,7 @@ final class BL_Markdown_For_Agents {
             ]
         );
         self::render_dashboard_card(
-            __( 'Missing companions', 'bloglogistics-markdown-for-agents' ),
+            __( 'Missing Markdown files', 'bloglogistics-markdown-for-agents' ),
             $missing,
             ! $health_ready ? 'na' : ( $missing ? 'problem' : 'healthy' ),
             [
@@ -2457,14 +2699,24 @@ final class BL_Markdown_For_Agents {
             ]
         );
         self::render_dashboard_card(
-            __( 'Live issues', 'bloglogistics-markdown-for-agents' ),
+            __( 'Live delivery', 'bloglogistics-markdown-for-agents' ),
             $live_issues,
-            ! $live_health ? 'na' : ( ! empty( $live_health['failed'] ) ? 'problem' : ( $live_issues ? 'review' : 'healthy' ) ),
+            ! $live_health ? 'na' : ( $live_problems ? 'problem' : ( $live_reviews ? 'review' : 'healthy' ) ),
             [
                 sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['live'] ) => self::settings_url( 'pages', 'live' ),
                 sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['live'] ) => self::settings_url( 'posts', 'live' ),
             ],
-            $live_health ? __( 'Based on the latest saved live checks', 'bloglogistics-markdown-for-agents' ) : __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' )
+            ! $live_health ? __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' ) : ( ! empty( $live_health['outdated_count'] ) ? sprintf( _n( '%d saved result needs re-verification', '%d saved results need re-verification', (int) $live_health['outdated_count'], 'bloglogistics-markdown-for-agents' ), (int) $live_health['outdated_count'] ) : __( 'HTML, Markdown, and MIME delivery', 'bloglogistics-markdown-for-agents' ) )
+        );
+        self::render_dashboard_card(
+            __( 'Discovery checks', 'bloglogistics-markdown-for-agents' ),
+            $discovery_issues,
+            ! $live_health ? 'na' : ( $discovery_problems ? 'problem' : ( $discovery_reviews ? 'review' : 'healthy' ) ),
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['discovery'] ) => self::settings_url( 'pages', 'discovery' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['discovery'] ) => self::settings_url( 'posts', 'discovery' ),
+            ],
+            $live_health ? __( 'Checks discovery links in the live HTML head', 'bloglogistics-markdown-for-agents' ) : __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' )
         );
         self::render_dashboard_card(
             __( 'Discovery disabled', 'bloglogistics-markdown-for-agents' ),
@@ -2515,9 +2767,9 @@ final class BL_Markdown_For_Agents {
 
         echo '<h2 style="margin-top:2em;">' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
         echo '<ol class="bl-mfa-how-it-works">';
-        echo '<li>' . esc_html__( 'Create and maintain your curated /llms.txt and Markdown companion files.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'For a normal page such as /about-us/, place the companion at /about-us/index.md. The homepage companion is /index.md.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'Run the incremental scan after files or WordPress content change. Use Force Full Rescan when every companion should be re-read.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'Create and maintain your curated /llms.txt and Markdown files.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'For a normal page such as /about-us/, place its Markdown file at /about-us/index.md. The homepage Markdown file is /index.md.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'Run the incremental scan after files or WordPress content change. Use Force Full Rescan when every Markdown file should be re-read.', 'bloglogistics-markdown-for-agents' ) . '</li>';
         echo '<li>' . esc_html__( 'Use the Pages and Posts tabs to review health, filter problems, change discovery settings, or verify selected content.', 'bloglogistics-markdown-for-agents' ) . '</li>';
         echo '<li>' . esc_html__( 'Use the llms.txt and Server & .htaccess tabs for focused validation and technical diagnostics.', 'bloglogistics-markdown-for-agents' ) . '</li>';
         echo '</ol>';
@@ -2539,7 +2791,8 @@ final class BL_Markdown_For_Agents {
             'missing'   => __( 'Missing', 'bloglogistics-markdown-for-agents' ),
             'stale'     => __( 'Stale', 'bloglogistics-markdown-for-agents' ),
             'encoding'  => __( 'Encoding', 'bloglogistics-markdown-for-agents' ),
-            'live'      => __( 'Live issues', 'bloglogistics-markdown-for-agents' ),
+            'live'      => __( 'Live delivery', 'bloglogistics-markdown-for-agents' ),
+            'discovery' => __( 'Discovery', 'bloglogistics-markdown-for-agents' ),
             'disabled'  => __( 'Disabled', 'bloglogistics-markdown-for-agents' ),
         ];
         $visible_ids = [];
@@ -2554,7 +2807,8 @@ final class BL_Markdown_For_Agents {
         }
 
         echo '<h2>' . esc_html( 'page' === $post_type ? __( 'Pages', 'bloglogistics-markdown-for-agents' ) : __( 'Posts', 'bloglogistics-markdown-for-agents' ) ) . '</h2>';
-        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. The table combines companion detection, freshness, encoding, live verification, and discovery state in one place.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. Markdown File tells you whether the curated /index.md file exists. Live Delivery checks whether the public HTML page and Markdown file load correctly and whether Markdown is served with the expected MIME type.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p class="description">' . esc_html__( 'Discovery is a separate check of the HTML <head>: it confirms whether the page advertises its Markdown file and llms.txt using discovery links. A Markdown file can be perfectly reachable even when discovery markup is missing or stale in cached HTML.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         echo '<ul class="subsubsub bl-mfa-filters">';
         $parts = [];
@@ -2602,10 +2856,10 @@ final class BL_Markdown_For_Agents {
         echo '<div class="bl-mfa-table-wrap"><table class="widefat striped bl-mfa-health-table"><thead><tr>';
         echo '<td class="check-column"><input type="checkbox" class="bl-mfa-select-all" aria-label="' . esc_attr__( 'Select all visible items', 'bloglogistics-markdown-for-agents' ) . '"></td>';
         echo '<th>' . esc_html__( 'Title', 'bloglogistics-markdown-for-agents' ) . '</th>';
-        echo '<th>' . esc_html__( 'Companion', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Markdown File', 'bloglogistics-markdown-for-agents' ) . '</th>';
         echo '<th>' . esc_html__( 'Freshness', 'bloglogistics-markdown-for-agents' ) . '</th>';
         echo '<th>' . esc_html__( 'Encoding', 'bloglogistics-markdown-for-agents' ) . '</th>';
-        echo '<th>' . esc_html__( 'Live Status', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Live Delivery', 'bloglogistics-markdown-for-agents' ) . '</th>';
         echo '<th>' . esc_html__( 'Discovery', 'bloglogistics-markdown-for-agents' ) . '</th>';
         echo '</tr></thead><tbody>';
 
@@ -2660,17 +2914,17 @@ final class BL_Markdown_For_Agents {
             if ( empty( $state['scanned'] ) ) {
                 echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not scanned yet', 'bloglogistics-markdown-for-agents' ) );
             } elseif ( ! empty( $state['exists'] ) ) {
-                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), __( 'Companion found', 'bloglogistics-markdown-for-agents' ) );
+                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), __( 'Markdown file found', 'bloglogistics-markdown-for-agents' ) );
             } elseif ( ! empty( $state['disabled'] ) ) {
-                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion; discovery is disabled', 'bloglogistics-markdown-for-agents' ) );
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No Markdown file; discovery is disabled', 'bloglogistics-markdown-for-agents' ) );
             } else {
-                echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), __( 'Companion missing', 'bloglogistics-markdown-for-agents' ) );
+                echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), __( 'Markdown file missing', 'bloglogistics-markdown-for-agents' ) );
             }
             echo '</td>';
 
             echo '<td>';
             if ( empty( $state['exists'] ) ) {
-                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion to compare', 'bloglogistics-markdown-for-agents' ) );
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No Markdown file to compare', 'bloglogistics-markdown-for-agents' ) );
             } elseif ( ! empty( $state['stale'] ) ) {
                 $post_modified = isset( $item['post_modified'] ) ? (int) $item['post_modified'] : 0;
                 $md_modified   = isset( $item['markdown_modified'] ) ? (int) $item['markdown_modified'] : 0;
@@ -2686,7 +2940,7 @@ final class BL_Markdown_For_Agents {
 
             echo '<td>';
             if ( empty( $state['exists'] ) ) {
-                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion to validate', 'bloglogistics-markdown-for-agents' ) );
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No Markdown file to validate', 'bloglogistics-markdown-for-agents' ) );
             } elseif ( ! empty( $state['encoding_bad'] ) ) {
                 $issue_labels = [];
                 foreach ( (array) ( $state['encoding']['issues'] ?? [] ) as $issue ) {
@@ -2706,22 +2960,18 @@ final class BL_Markdown_For_Agents {
 
             echo '<td>';
             if ( empty( $state['exists'] ) ) {
-                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion to verify', 'bloglogistics-markdown-for-agents' ) );
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No Markdown file to verify', 'bloglogistics-markdown-for-agents' ) );
             } elseif ( empty( $state['live'] ) ) {
                 echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' ) );
             } else {
-                $live_detail = sprintf(
-                    __( 'HTML %1$d; Markdown %2$d', 'bloglogistics-markdown-for-agents' ),
-                    (int) ( $live_item['html_status'] ?? 0 ),
-                    (int) ( $live_item['markdown_status'] ?? 0 )
-                );
-                $mime_label = self::markdown_mime_label( (string) ( $live_item['mime_state'] ?? 'bad' ), (string) ( $live_item['content_type'] ?? '' ) );
-                if ( '' !== $mime_label ) {
-                    $live_detail .= '; ' . $mime_label;
-                }
-                if ( ! empty( $state['live_bad'] ) ) {
+                $live_detail = self::live_delivery_detail( $live_item );
+
+                if ( ! empty( $state['live_outdated'] ) ) {
+                    $live_detail .= '; ' . __( 'Previous verification may be outdated; run live verification again', 'bloglogistics-markdown-for-agents' );
+                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $live_detail );
+                } elseif ( ! empty( $state['live_bad'] ) ) {
                     $issue_labels = [];
-                    foreach ( (array) ( $live_item['issues'] ?? [] ) as $issue ) {
+                    foreach ( (array) $state['delivery_issues'] as $issue ) {
                         $issue_labels[] = self::live_issue_label( (string) $issue );
                     }
                     if ( $issue_labels ) {
@@ -2729,7 +2979,16 @@ final class BL_Markdown_For_Agents {
                     }
                     echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), $live_detail );
                 } elseif ( ! empty( $state['live_review'] ) ) {
-                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $live_detail . '; ' . __( 'warning recorded', 'bloglogistics-markdown-for-agents' ) );
+                    $warning_labels = [];
+                    foreach ( (array) $state['delivery_warnings'] as $warning ) {
+                        $warning_labels[] = 'markdown_mime' === (string) $warning
+                            ? __( 'A usable, non-preferred Markdown MIME type was returned.', 'bloglogistics-markdown-for-agents' )
+                            : self::live_issue_label( (string) $warning );
+                    }
+                    if ( $warning_labels ) {
+                        $live_detail .= '; ' . implode( ' ', $warning_labels );
+                    }
+                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $live_detail );
                 } else {
                     echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), $live_detail );
                 }
@@ -2737,15 +2996,44 @@ final class BL_Markdown_For_Agents {
             echo '</td>';
 
             echo '<td>';
-            if ( ! empty( $state['disabled'] ) ) {
-                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Discovery disabled by choice', 'bloglogistics-markdown-for-agents' ) );
-            } elseif ( empty( $state['exists'] ) ) {
-                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not advertised without a companion', 'bloglogistics-markdown-for-agents' ) );
-            } elseif ( ! empty( $live_item['discovery'] ) && empty( $live_item['discovery']['passed'] ) ) {
-                echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), __( 'Live discovery needs attention', 'bloglogistics-markdown-for-agents' ) );
+            if ( empty( $state['exists'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not advertised without a Markdown file', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( empty( $state['live'] ) ) {
+                $detail = ! empty( $state['disabled'] )
+                    ? __( 'Discovery disabled by choice; not live-verified yet', 'bloglogistics-markdown-for-agents' )
+                    : __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' );
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), $detail );
+            } elseif ( 200 !== (int) ( $live_item['html_status'] ?? 0 ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Discovery could not be checked because the HTML page did not return HTTP 200', 'bloglogistics-markdown-for-agents' ) );
             } else {
-                $detail = ! empty( $live_item['discovery']['passed'] ) ? __( 'Enabled and live-verified', 'bloglogistics-markdown-for-agents' ) : __( 'Enabled', 'bloglogistics-markdown-for-agents' );
-                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), $detail );
+                $discovery_detail = self::discovery_detail( $live_item );
+
+                if ( ! empty( $state['live_outdated'] ) ) {
+                    $discovery_detail .= '; ' . __( 'Previous verification may be outdated; run live verification again', 'bloglogistics-markdown-for-agents' );
+                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $discovery_detail );
+                } elseif ( ! empty( $state['discovery_bad'] ) ) {
+                    $issue_labels = [];
+                    foreach ( (array) $state['discovery_issues'] as $issue ) {
+                        $issue_labels[] = self::live_issue_label( (string) $issue );
+                    }
+                    if ( $issue_labels ) {
+                        $discovery_detail .= '; ' . implode( ' ', $issue_labels );
+                    }
+                    echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), $discovery_detail );
+                } elseif ( ! empty( $state['discovery_review'] ) ) {
+                    $warning_labels = [];
+                    foreach ( (array) $state['discovery_warnings'] as $warning ) {
+                        $warning_labels[] = self::live_issue_label( (string) $warning );
+                    }
+                    if ( $warning_labels ) {
+                        $discovery_detail .= '; ' . implode( ' ', $warning_labels );
+                    }
+                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $discovery_detail );
+                } elseif ( ! empty( $state['disabled'] ) ) {
+                    echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), $discovery_detail );
+                } else {
+                    echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), $discovery_detail );
+                }
             }
             echo '<label class="bl-mfa-discovery-toggle"><input type="checkbox" name="disabled_ids[]" value="' . esc_attr( (string) $post_id ) . '" ' . checked( ! empty( $state['disabled'] ), true, false ) . '> ' . esc_html__( 'Disable discovery', 'bloglogistics-markdown-for-agents' ) . '</label>';
             echo '</td></tr>';
@@ -2907,7 +3195,7 @@ final class BL_Markdown_For_Agents {
             }
             echo '<tr><th scope="row">' . esc_html__( 'Live server-rule test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( $live_status, $live_label, $live_detail ) . '</td></tr>';
         } elseif ( $rewrite_verified && $mime_rule_verified ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Live server-rule test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Waiting for a detected non-homepage Markdown companion', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
+            echo '<tr><th scope="row">' . esc_html__( 'Live server-rule test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Waiting for a detected non-homepage Markdown file', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
         }
         if ( $verified_at ) {
             echo '<tr><th scope="row">' . esc_html__( 'Last .htaccess check', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( wp_date( 'Y-m-d H:i:s T', $verified_at ) ) . '</td></tr>';
@@ -2993,7 +3281,7 @@ final class BL_Markdown_For_Agents {
             $reused    = isset( $_GET['reused'] ) ? absint( $_GET['reused'] ) : 0;
             echo '<div class="notice notice-success is-dismissible"><p>';
             printf(
-                esc_html__( 'Scan complete. Checked %1$d published posts/pages, detected %2$d companions, removed %3$d stale Markdown URL fields, validated %4$d changed files, and reused %5$d unchanged validation results.', 'bloglogistics-markdown-for-agents' ),
+                esc_html__( 'Scan complete. Checked %1$d published posts/pages, detected %2$d Markdown files, removed %3$d stale Markdown URL fields, validated %4$d changed files, and reused %5$d unchanged validation results.', 'bloglogistics-markdown-for-agents' ),
                 $checked,
                 $found,
                 $removed,
@@ -3019,13 +3307,16 @@ final class BL_Markdown_For_Agents {
         } elseif ( 'live_verified' === $message ) {
             $checked   = isset( $_GET['checked'] ) ? absint( $_GET['checked'] ) : 0;
             $passed    = isset( $_GET['passed'] ) ? absint( $_GET['passed'] ) : 0;
+            $reviewed  = isset( $_GET['reviewed'] ) ? absint( $_GET['reviewed'] ) : 0;
             $failed    = isset( $_GET['failed'] ) ? absint( $_GET['failed'] ) : 0;
             $truncated = ! empty( $_GET['truncated'] );
-            echo '<div class="notice ' . esc_attr( $failed ? 'notice-warning' : 'notice-success' ) . ' is-dismissible"><p>';
+            $notice_class = $failed ? 'notice-error' : ( $reviewed ? 'notice-warning' : 'notice-success' );
+            echo '<div class="notice ' . esc_attr( $notice_class ) . ' is-dismissible"><p>';
             printf(
-                esc_html__( 'Live verification complete. Checked %1$d companions, %2$d passed and %3$d need attention.', 'bloglogistics-markdown-for-agents' ),
+                esc_html__( 'Live verification complete. Checked %1$d Markdown files: %2$d healthy, %3$d for review, and %4$d with problems.', 'bloglogistics-markdown-for-agents' ),
                 $checked,
                 $passed,
+                $reviewed,
                 $failed
             );
             if ( $truncated ) {
@@ -3143,6 +3434,7 @@ final class BL_Markdown_For_Agents {
                     'bloglogistics_mfa_message' => 'live_verified',
                     'checked'                   => (int) $result['checked'],
                     'passed'                    => (int) $result['passed'],
+                    'reviewed'                  => (int) ( $result['reviewed'] ?? 0 ),
                     'failed'                    => (int) $result['failed'],
                     'truncated'                 => ! empty( $result['truncated'] ) ? 1 : 0,
                 ],
@@ -3177,6 +3469,7 @@ final class BL_Markdown_For_Agents {
                     'bloglogistics_mfa_message' => 'live_verified',
                     'checked'                   => (int) $result['checked'],
                     'passed'                    => (int) $result['passed'],
+                    'reviewed'                  => (int) ( $result['reviewed'] ?? 0 ),
                     'failed'                    => (int) $result['failed'],
                     'truncated'                 => 0,
                 ],
@@ -3339,10 +3632,10 @@ final class BL_Markdown_For_Agents {
         $disabled     = self::is_discovery_disabled( $post->ID );
 
         if ( '' !== $markdown_url ) {
-            echo '<p><strong>' . esc_html__( 'Markdown companion detected:', 'bloglogistics-markdown-for-agents' ) . '</strong></p>';
+            echo '<p><strong>' . esc_html__( 'Markdown file detected:', 'bloglogistics-markdown-for-agents' ) . '</strong></p>';
             echo '<p style="word-break:break-word;"><a href="' . esc_url( $markdown_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $markdown_url ) . '</a></p>';
         } else {
-            echo '<p><strong>' . esc_html__( 'No Markdown companion is currently recorded for this content.', 'bloglogistics-markdown-for-agents' ) . '</strong></p>';
+            echo '<p><strong>' . esc_html__( 'No Markdown file is currently recorded for this content.', 'bloglogistics-markdown-for-agents' ) . '</strong></p>';
             echo '<p>' . esc_html__( 'Create the curated index.md file yourself, then run BlogLogistics > Markdown for Agents > Scan Changes and Refresh Health.', 'bloglogistics-markdown-for-agents' ) . '</p>';
         }
 

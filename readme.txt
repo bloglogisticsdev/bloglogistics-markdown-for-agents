@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.4.0
+Stable tag: 2.4.1
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganizes these tools into an easier tabbed interface with separate Pages and Posts views, filtered health states, linked dashboard cards, a dedicated llms.txt view, and a separate Server & .htaccess area. These checks do not run on normal public page loads and do not modify Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separates Markdown file presence, live delivery, and HTML discovery more clearly, adds stale-cache discovery diagnosis, and preserves saved live results as Review when later scans make them potentially outdated. These checks do not run on normal public page loads and do not modify Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -148,6 +148,18 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.4.1 =
+* Rename the Pages/Posts **Companion** column to **Markdown File** and use clearer Markdown-file wording throughout the main health UI.
+* Rename **Live Status** to **Live Delivery** and keep HTTP/MIME delivery results separate from discovery-markup results.
+* Add a dedicated **Discovery** filter alongside Live delivery.
+* Verify discovery against the canonical public HTML first, then perform one cache-busting recheck only when the expected discovery state is not found.
+* Report stale cached HTML as **Review** when the cache-busting recheck contains the correct Markdown and llms.txt discovery links.
+* Report genuinely missing or unexpected discovery markup as a Discovery **Problem** without incorrectly marking the reachable Markdown file itself as broken.
+* Show Markdown discovery and llms.txt discovery details separately in the Discovery column.
+* Preserve prior live-verification results across local rescans and mark affected results as **Review** until live verification is run again.
+* Add separate Overview cards for **Live delivery** and **Discovery checks**.
+* Keep all additional checks administrator-driven with no new filesystem or HTTP work on normal public page loads.
 
 = 2.4.0 =
 * Reorganize the administrator interface into Overview, Pages, Posts, llms.txt, and Server & .htaccess tabs.
