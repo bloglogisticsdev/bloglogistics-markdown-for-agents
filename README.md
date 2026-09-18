@@ -43,7 +43,7 @@ The stale-file indicator is deliberately labelled **possibly stale**. It compare
 
 ## Administrator interface
 
-Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refines the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand:
+Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 further improves reliability by supporting discovery on the configured WordPress Posts page and by treating cache/header discrepancies as Review items rather than false red delivery failures:
 
 - **Overview** provides linked Markdown Health Dashboard cards and the main scan/live-verification actions.
 - **Pages** shows only WordPress pages in one consolidated health and discovery table.
@@ -90,11 +90,11 @@ Live verification is separate from the local scan because it makes public same-s
 - whether discovery markup remains absent on pages where discovery is disabled;
 - whether the canonical public HTML appears stale when a cache-busting recheck contains the expected discovery markup.
 
-The normal canonical page is checked first because that reflects what an agent may actually receive. If discovery markup is missing or unexpectedly present, the plugin performs one cache-busting recheck. If the recheck is correct, the row is reported as **Review** for stale cached HTML rather than as a broken Markdown endpoint. If the recheck still lacks the expected discovery markup, Discovery is reported as a **Problem**.
+The normal canonical page is checked first because that reflects what an agent may actually receive. If discovery markup is missing or unexpectedly present, the plugin performs one cache-busting recheck. If the recheck is correct, the row is reported as **Review** for stale cached HTML rather than as a broken Markdown endpoint. If the recheck still lacks the expected discovery markup, Discovery is reported as **Review**. The Markdown file's actual HTTP delivery remains a separate result. Version 2.4.2 also supports the configured WordPress Posts page, which WordPress exposes as an `is_home()` archive rather than a singular Page request.
 
 A later local scan no longer discards saved live results. When a relevant page/Markdown scan signature or the presence of `llms.txt` changes, the previous live result is retained and marked **Review** until live verification is run again.
 
-`text/markdown` is treated as the preferred Markdown MIME type. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures.
+`text/markdown` is treated as the preferred Markdown MIME type. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. If a canonical HTTP 200 Markdown response has a missing or incorrect Content-Type, version 2.4.2 performs one cache-busting Markdown recheck. A fresh preferred MIME result is reported as **Review** for stale cached headers. A missing header that cannot be confirmed by the server-side verifier is also **Review** rather than a red delivery failure; an explicitly incorrect MIME type that persists on the fresh recheck remains a **Problem**.
 
 ## Bulk management
 

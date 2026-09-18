@@ -103,7 +103,44 @@ final class BL_Markdown_For_Agents {
         }
 
         self::ensure_htaccess_rule( true );
+
+        // Live verification changed materially in 2.4.2. Preserve previous
+        // results for context, but require one fresh verification pass before
+        // treating them as current.
+        if ( '' !== $stored_version && version_compare( $stored_version, '2.4.2', '<' ) ) {
+            self::mark_saved_live_results_outdated();
+        }
+
         update_option( BLOGLOGISTICS_MFA_VERSION_OPTION, BLOGLOGISTICS_MFA_VERSION, false );
+    }
+
+    /**
+     * Mark previously saved live results for re-verification after a verifier
+     * behaviour change without discarding the administrator's history.
+     */
+    private static function mark_saved_live_results_outdated(): void {
+        $health = get_option( self::HEALTH_OPTION, [] );
+
+        if ( ! is_array( $health ) || ! isset( $health['live']['items'] ) || ! is_array( $health['live']['items'] ) ) {
+            return;
+        }
+
+        $outdated_count = 0;
+        $marked_at      = time();
+
+        foreach ( $health['live']['items'] as $post_id => $item ) {
+            if ( ! is_array( $item ) ) {
+                continue;
+            }
+
+            $item['outdated']    = true;
+            $item['outdated_at'] = $marked_at;
+            $health['live']['items'][ $post_id ] = $item;
+            $outdated_count++;
+        }
+
+        $health['live']['outdated_count'] = $outdated_count;
+        update_option( self::HEALTH_OPTION, $health, false );
     }
 
     /**
@@ -158,14 +195,19 @@ final class BL_Markdown_For_Agents {
     public static function output_discovery_links(): void {
         static $done = false;
 
-        if ( $done || ! is_singular( [ 'post', 'page' ] ) ) {
+        if ( $done ) {
             return;
         }
 
-        $done    = true;
-        $post_id = get_queried_object_id();
+        $post_id = self::current_discovery_post_id();
 
-        if ( ! $post_id || self::is_discovery_disabled( $post_id ) ) {
+        if ( ! $post_id ) {
+            return;
+        }
+
+        $done = true;
+
+        if ( self::is_discovery_disabled( $post_id ) ) {
             return;
         }
 
@@ -186,6 +228,29 @@ final class BL_Markdown_For_Agents {
                 esc_url( home_url( '/llms.txt' ) )
             );
         }
+    }
+
+    /**
+     * Resolve the WordPress content object whose discovery links belong in the
+     * current front-end response. The configured Posts page is an archive
+     * request (`is_home()`), not a singular page, even though it is backed by a
+     * real Page object. Supporting it here keeps a /notes/ style Posts page in
+     * sync with the rest of the plugin's Page health model.
+     */
+    private static function current_discovery_post_id(): int {
+        if ( is_singular( [ 'post', 'page' ] ) ) {
+            return absint( get_queried_object_id() );
+        }
+
+        if ( is_home() ) {
+            $posts_page_id = absint( get_option( 'page_for_posts', 0 ) );
+
+            if ( $posts_page_id && 'publish' === get_post_status( $posts_page_id ) ) {
+                return $posts_page_id;
+            }
+        }
+
+        return 0;
     }
 
     private static function is_discovery_disabled( int $post_id ): bool {
@@ -618,6 +683,10 @@ final class BL_Markdown_For_Agents {
     private static function markdown_mime_state( string $content_type ): string {
         $base_type = strtolower( trim( explode( ';', $content_type, 2 )[0] ?? '' ) );
 
+        if ( '' === $base_type ) {
+            return 'missing';
+        }
+
         if ( 'text/markdown' === $base_type ) {
             return 'preferred';
         }
@@ -643,9 +712,10 @@ final class BL_Markdown_For_Agents {
                 __( 'Usable, but text/markdown is preferred (%s)', 'bloglogistics-markdown-for-agents' ),
                 $content_type
             ),
+            'missing'   => __( 'Content-Type was not reported to the verifier', 'bloglogistics-markdown-for-agents' ),
             default     => sprintf(
                 /* translators: %s: Content-Type response header. */
-                __( 'Incorrect or missing Markdown MIME type (%s)', 'bloglogistics-markdown-for-agents' ),
+                __( 'Incorrect Markdown MIME type (%s)', 'bloglogistics-markdown-for-agents' ),
                 $content_type
             ),
         };
@@ -658,7 +728,9 @@ final class BL_Markdown_For_Agents {
             'markdown_request_error'        => __( 'The Markdown request failed.', 'bloglogistics-markdown-for-agents' ),
             'html_status'                   => __( 'The WordPress page did not return HTTP 200.', 'bloglogistics-markdown-for-agents' ),
             'markdown_status'               => __( 'The Markdown file did not return HTTP 200.', 'bloglogistics-markdown-for-agents' ),
-            'markdown_mime'                 => __( 'The Markdown file returned an incorrect or missing Content-Type.', 'bloglogistics-markdown-for-agents' ),
+            'markdown_mime'                 => __( 'The Markdown file returned an incorrect Content-Type.', 'bloglogistics-markdown-for-agents' ),
+            'markdown_mime_unconfirmed'     => __( 'The Markdown file returned HTTP 200, but the verifier did not receive a Content-Type header.', 'bloglogistics-markdown-for-agents' ),
+            'stale_cached_mime'             => __( 'Cached Markdown headers appear stale; a fresh recheck returned the preferred text/markdown Content-Type.', 'bloglogistics-markdown-for-agents' ),
             'missing_markdown_discovery'    => __( 'The expected rel="alternate" Markdown discovery link was not found.', 'bloglogistics-markdown-for-agents' ),
             'unexpected_markdown_discovery' => __( 'A Markdown discovery link is still present even though discovery is disabled.', 'bloglogistics-markdown-for-agents' ),
             'missing_llms_discovery'        => __( 'The expected llms.txt rel="describedby" link was not found.', 'bloglogistics-markdown-for-agents' ),
@@ -875,7 +947,11 @@ final class BL_Markdown_For_Agents {
             'markdown_status'         => 0,
             'markdown_redirected'     => false,
             'content_type'            => '',
-            'mime_state'              => 'bad',
+            'mime_state'              => 'missing',
+            'markdown_fresh_content_type' => '',
+            'markdown_fresh_mime_state'   => '',
+            'markdown_mime_cache_state'   => 'not_checked',
+            'markdown_recheck_status'     => 0,
             'expect_markdown'         => ! $disabled,
             'expect_llms'             => ! $disabled && $has_llms,
             'discovery'               => [],
@@ -928,8 +1004,38 @@ final class BL_Markdown_For_Agents {
         }
 
         if ( 200 === (int) $md['status'] ) {
-            if ( 'bad' === $result['mime_state'] ) {
-                $result['delivery_issues'][] = 'markdown_mime';
+            if ( in_array( $result['mime_state'], [ 'missing', 'bad' ], true ) ) {
+                // Static files can retain old CDN/page-cache response headers even
+                // after the Apache MIME rule has been corrected. Recheck once with
+                // a unique query string before turning a good HTTP 200 into a red
+                // delivery failure.
+                $fresh_md = self::live_request( $markdown_url, 131072, true );
+                $result['markdown_recheck_status'] = (int) $fresh_md['status'];
+
+                if ( '' === (string) $fresh_md['error'] && 200 === (int) $fresh_md['status'] ) {
+                    $result['markdown_fresh_content_type'] = (string) $fresh_md['content_type'];
+                    $result['markdown_fresh_mime_state']   = self::markdown_mime_state( (string) $fresh_md['content_type'] );
+
+                    if ( 'preferred' === $result['markdown_fresh_mime_state'] ) {
+                        $result['markdown_mime_cache_state'] = 'stale_cache';
+                        $result['delivery_warnings'][]       = 'stale_cached_mime';
+                    } elseif ( 'warning' === $result['markdown_fresh_mime_state'] ) {
+                        $result['markdown_mime_cache_state'] = 'fresh_warning';
+                        $result['delivery_warnings'][]       = 'markdown_mime';
+                    } elseif ( 'missing' === $result['markdown_fresh_mime_state'] ) {
+                        $result['markdown_mime_cache_state'] = 'unconfirmed';
+                        $result['delivery_warnings'][]       = 'markdown_mime_unconfirmed';
+                    } else {
+                        $result['markdown_mime_cache_state'] = 'bad';
+                        $result['delivery_issues'][]         = 'markdown_mime';
+                    }
+                } elseif ( 'missing' === $result['mime_state'] ) {
+                    $result['markdown_mime_cache_state'] = 'recheck_failed';
+                    $result['delivery_warnings'][]       = 'markdown_mime_unconfirmed';
+                } else {
+                    $result['markdown_mime_cache_state'] = 'recheck_failed';
+                    $result['delivery_issues'][]         = 'markdown_mime';
+                }
             } elseif ( 'warning' === $result['mime_state'] ) {
                 $result['delivery_warnings'][] = 'markdown_mime';
             }
@@ -969,7 +1075,11 @@ final class BL_Markdown_For_Agents {
                         $result['discovery_warnings'][]  = 'stale_cached_discovery';
                     } else {
                         $result['discovery_cache_state'] = 'missing';
-                        $result['discovery_issues']      = array_values( array_map( 'strval', (array) $result['discovery_fresh']['issues'] ) );
+                        // Discovery markup is important, but it is not the same as
+                        // endpoint delivery. A missing discovery tag on otherwise
+                        // reachable content is therefore a Review, not a red file
+                        // delivery failure.
+                        $result['discovery_warnings'] = array_values( array_map( 'strval', (array) $result['discovery_fresh']['issues'] ) );
                     }
                 } else {
                     $result['discovery_cache_state'] = 'recheck_failed';
@@ -1067,15 +1177,20 @@ final class BL_Markdown_For_Agents {
                 $passed++;
             }
 
-            if ( 200 === (int) ( $item['markdown_status'] ?? 0 ) ) {
-                if ( 'warning' === (string) ( $item['mime_state'] ?? '' ) ) {
-                    $mime_warnings++;
-                } elseif ( 'bad' === (string) ( $item['mime_state'] ?? '' ) ) {
-                    $mime_failures++;
-                }
+            $item_delivery_issues   = isset( $item['delivery_issues'] ) && is_array( $item['delivery_issues'] ) ? array_map( 'strval', $item['delivery_issues'] ) : [];
+            $item_delivery_warnings = isset( $item['delivery_warnings'] ) && is_array( $item['delivery_warnings'] ) ? array_map( 'strval', $item['delivery_warnings'] ) : [];
+
+            if ( in_array( 'markdown_mime', $item_delivery_issues, true ) ) {
+                $mime_failures++;
+            } elseif (
+                in_array( 'markdown_mime', $item_delivery_warnings, true )
+                || in_array( 'markdown_mime_unconfirmed', $item_delivery_warnings, true )
+                || in_array( 'stale_cached_mime', $item_delivery_warnings, true )
+            ) {
+                $mime_warnings++;
             }
 
-            if ( ! empty( $item['discovery_issues'] ) ) {
+            if ( ! empty( $item['discovery_issues'] ) || ! empty( $item['discovery_warnings'] ) ) {
                 $discovery_failures++;
             }
 
@@ -2319,10 +2434,32 @@ final class BL_Markdown_For_Agents {
             ? array_values( array_map( 'strval', $live_item['discovery_warnings'] ) )
             : array_values( array_intersect( $all_warnings, [ 'stale_cached_discovery', 'discovery_recheck_failed' ] ) );
 
+        // Normalize saved 2.4.0/2.4.1 results so a reachable file with a
+        // missing Content-Type is a Review rather than a red delivery failure.
+        if (
+            in_array( 'markdown_mime', $delivery_issues, true )
+            && '' === trim( (string) ( $live_item['content_type'] ?? '' ) )
+            && 200 === (int) ( $live_item['markdown_status'] ?? 0 )
+        ) {
+            $delivery_issues   = array_values( array_diff( $delivery_issues, [ 'markdown_mime' ] ) );
+            $delivery_warnings[] = 'markdown_mime_unconfirmed';
+        }
+
+        // Discovery mismatches describe advertising state, not file delivery.
+        // Older saved results used the red issue bucket; normalize them to
+        // Review so the UI remains consistent with the 2.4.2 verifier.
+        if ( $discovery_issues ) {
+            $discovery_warnings = array_values( array_unique( array_merge( $discovery_warnings, $discovery_issues ) ) );
+            $discovery_issues   = [];
+        }
+
+        $delivery_warnings  = array_values( array_unique( $delivery_warnings ) );
+        $discovery_warnings = array_values( array_unique( $discovery_warnings ) );
+
         $live_bad         = $live && ! $outdated && ! empty( $delivery_issues );
         $live_review      = $live && ( $outdated || ( ! $live_bad && ! empty( $delivery_warnings ) ) );
-        $discovery_bad    = $live && ! $outdated && ! empty( $discovery_issues );
-        $discovery_review = $live && ( $outdated || ( ! $discovery_bad && ! empty( $discovery_warnings ) ) );
+        $discovery_bad    = false;
+        $discovery_review = $live && ( $outdated || ! empty( $discovery_warnings ) );
         $missing          = $scanned && ! $exists && ! $disabled;
         $attention        = $missing || $stale || $enc_bad || $enc_bom || $live_bad || $live_review || $discovery_bad || $discovery_review;
 
@@ -2470,9 +2607,22 @@ final class BL_Markdown_For_Agents {
             (int) ( $live_item['html_status'] ?? 0 ),
             (int) ( $live_item['markdown_status'] ?? 0 )
         );
-        $mime_label = self::markdown_mime_label( (string) ( $live_item['mime_state'] ?? 'bad' ), (string) ( $live_item['content_type'] ?? '' ) );
-        if ( '' !== $mime_label ) {
-            $detail .= '; ' . $mime_label;
+        $cache_state = (string) ( $live_item['markdown_mime_cache_state'] ?? '' );
+
+        if ( 'stale_cache' === $cache_state ) {
+            $fresh_type = trim( (string) ( $live_item['markdown_fresh_content_type'] ?? '' ) );
+            $detail .= '; ' . sprintf(
+                /* translators: %s: fresh Content-Type header. */
+                __( 'Cached MIME headers appear stale; fresh recheck: %s', 'bloglogistics-markdown-for-agents' ),
+                '' !== $fresh_type ? $fresh_type : __( 'text/markdown confirmed', 'bloglogistics-markdown-for-agents' )
+            );
+        } elseif ( 'unconfirmed' === $cache_state || 'recheck_failed' === $cache_state ) {
+            $detail .= '; ' . __( 'Content-Type was not returned to the server-side verifier; the Markdown file is reachable', 'bloglogistics-markdown-for-agents' );
+        } else {
+            $mime_label = self::markdown_mime_label( (string) ( $live_item['mime_state'] ?? 'missing' ), (string) ( $live_item['content_type'] ?? '' ) );
+            if ( '' !== $mime_label ) {
+                $detail .= '; ' . $mime_label;
+            }
         }
 
         return $detail;

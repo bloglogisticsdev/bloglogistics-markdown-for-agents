@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.4.1
+Stable tag: 2.4.2
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separates Markdown file presence, live delivery, and HTML discovery more clearly, adds stale-cache discovery diagnosis, and preserves saved live results as Review when later scans make them potentially outdated. These checks do not run on normal public page loads and do not modify Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixes discovery for the configured WordPress Posts page, makes Markdown MIME verification cache-aware, and treats reachable files with an unconfirmed Content-Type or discovery-only mismatches as Review instead of red delivery failures. These checks do not run on normal public page loads and do not modify Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -83,10 +83,10 @@ It checks that llms.txt exists and is readable, validates UTF-8 encoding, report
 The local Markdown and llms.txt health scan reads local files only. Live Endpoint Verification is a separate administrator action that makes same-site HTTP requests to verify public delivery. The existing .htaccess coexistence verification can also make a same-site request when a suitable companion is available.
 
 = What does Live Endpoint Verification check? =
-It checks the WordPress page and Markdown companion HTTP status, records redirects, checks the Markdown Content-Type response header, and verifies the expected rel="alternate" Markdown discovery link and llms.txt rel="describedby" link. Pages with discovery disabled are checked to confirm those plugin discovery links are absent.
+It checks the WordPress page and Markdown companion HTTP status, records redirects, checks the Markdown Content-Type response header, and verifies the expected rel="alternate" Markdown discovery link and llms.txt rel="describedby" link. If Markdown returns HTTP 200 but its Content-Type is missing or incorrect, version 2.4.2 performs one cache-busting Markdown recheck before classifying the result. Pages with discovery disabled are checked to confirm those plugin discovery links are absent.
 
 = What Markdown MIME type is preferred? =
-`text/markdown` is preferred. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. Other or missing content types are flagged for attention.
+`text/markdown` is preferred. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. A missing Content-Type on an otherwise reachable HTTP 200 Markdown file is a Review because some server/CDN paths do not expose the header consistently to WordPress's server-side verifier. An explicitly incorrect MIME type that persists on a fresh recheck remains a Problem.
 
 = What does incremental scanning mean? =
 Every scan still checks expected file existence, timestamps, and sizes so additions and removals are detected. If a companion's scan signature is unchanged, the plugin reuses its previous encoding-validation result instead of reading and validating the full file again. Use **Force Full Rescan** to bypass that reuse.
@@ -148,6 +148,14 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.4.2 =
+* Fixed discovery output for the configured WordPress Posts page, which is an `is_home()` archive rather than a singular Page request.
+* Added cache-aware Markdown MIME rechecking when the canonical response is missing or returns an incorrect Content-Type.
+* Downgraded an unconfirmed Content-Type on an otherwise reachable HTTP 200 Markdown file from Problem to Review.
+* Discovery-only mismatches are now Review items rather than red file-delivery failures.
+* Preserved older saved results while marking them for one fresh verification pass after upgrade.
+* Normalized saved 2.4.0/2.4.1 MIME and discovery results to the new severity model.
 
 = 2.4.1 =
 * Rename the Pages/Posts **Companion** column to **Markdown File** and use clearer Markdown-file wording throughout the main health UI.
