@@ -1,12 +1,12 @@
 # BlogLogistics Markdown for Agents
 
-BlogLogistics Markdown for Agents advertises, validates, and live-verifies user-curated Markdown companion files and `llms.txt` for AI agents without generating Markdown or checking the filesystem on public page loads.
+BlogLogistics Markdown for Agents advertises, validates, live-verifies, and safely edits user-curated Markdown companion files and `llms.txt` for AI agents without generating Markdown or checking the filesystem on public page loads.
 
 ## Philosophy
 
-The plugin deliberately keeps editorial control with the site owner. It does not create, rewrite, or curate `llms.txt`, `/index.md`, or any `/path/index.md` file.
+The plugin deliberately keeps editorial control with the site owner. It never generates Markdown or derives machine-readable content automatically from WordPress.
 
-Users create those files themselves. The plugin discovers them during an administrator-run scan, records the relationship in WordPress post metadata, validates local file health, and advertises eligible files on the corresponding HTML page.
+Users create and curate those files themselves. Version 2.5.0 adds an optional administrator-only plain text editor for existing `llms.txt`, `/index.md`, and `/path/index.md` files. The editor saves only the text the administrator explicitly enters; it does not create missing curated files or convert WordPress content into Markdown. The plugin discovers existing files during an administrator-run scan, records the relationship in WordPress post metadata, validates local file health, and advertises eligible files on the corresponding HTML page.
 
 ## Workflow
 
@@ -16,10 +16,10 @@ Users create those files themselves. The plugin discovers them during an adminis
 4. Click **Scan Changes and Refresh Health**. The incremental scan checks file existence, timestamps, and sizes, while reusing previous encoding validation for unchanged files.
 5. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 6. Use **Run Live Endpoint Verification** to have your administrator browser check public HTML/Markdown delivery, Markdown MIME type, and discovery markup. When an initial result fails or is uncertain, one fresh browser retry is used, and a successful retry becomes the current result without a stale-cache warning.
-7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, manage discovery, and verify selected content.
-8. Use the **llms.txt** tab for focused validation and local Markdown-reference health.
+7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, edit an existing Markdown file, view the public Markdown file, manage discovery, and verify selected content.
+8. Use the **llms.txt** tab for focused validation, local Markdown-reference health, and the optional llms.txt editor.
 9. Use **Server & .htaccess** for server compatibility, Markdown MIME delivery, rule repair, and backup management.
-10. Purge page/CDN caches after changes that affect discovery markup or public file delivery.
+10. Purge page/CDN caches after changes that affect discovery markup or cached public file delivery.
 
 ## Markdown Health Dashboard
 
@@ -43,7 +43,7 @@ The stale-file indicator is deliberately labelled **possibly stale**. It compare
 
 ## Administrator interface
 
-Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moved normal live endpoint verification into the administrator's browser. Version 2.4.4 prevents unverified or inconclusive checks from being presented as site-health warnings:
+Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moved normal live endpoint verification into the administrator's browser. Version 2.4.4 prevents unverified or inconclusive checks from being presented as site-health warnings. Version 2.5.0 adds a plain text editor for existing curated files:
 
 - **Overview** provides linked Markdown Health Dashboard cards and the main scan/live-verification actions.
 - **Pages** shows only WordPress pages in one consolidated health and discovery table.
@@ -51,9 +51,42 @@ Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4
 - **llms.txt** provides dedicated validation, warnings, and stored same-site Markdown-reference results.
 - **Server & .htaccess** contains technical server diagnostics, rule management, live server-rule checks, and backup cleanup.
 
-Pages and Posts can be filtered by **Needs attention**, **Missing**, **Stale**, **Encoding**, **Live delivery**, **Discovery**, or **Disabled**. Row actions provide direct Edit, View Page/View Post, View Markdown, and Verify shortcuts when available. The plugin preserves the active tab and filter after administrator actions.
+Pages and Posts can be filtered by **Needs attention**, **Missing**, **Stale**, **Encoding**, **Live delivery**, **Discovery**, or **Disabled**. Row actions are focused on the Markdown layer: **Edit Markdown**, **View Markdown**, and **Verify**. WordPress Page/Post editing is intentionally left to the normal WordPress content screens. The plugin preserves the active tab and filter after administrator actions.
 
 Status presentation is consistent across the interface: **Healthy** is green, **Problem** is red, **Review** is yellow, and **Not applicable** is light grey. Text labels accompany colour so status is not communicated by colour alone.
+
+## Plain text Markdown editor
+
+Version 2.5.0 adds a deliberately simple administrator-only editor for existing curated files. It is not Gutenberg, TinyMCE, or a Markdown generator. It is a monospaced text area for directly editing the actual `.md` file or root `llms.txt`.
+
+The editor encourages a restrained, AI-readable subset such as:
+
+```markdown
+# Main heading
+## Section heading
+### Subsection heading
+
+**Bold text**
+*Italic text*
+
+- Bullet item
+- Another item
+
+[Link text](https://example.com/)
+```
+
+Safety behaviour includes:
+
+- editing only a scanned same-site Markdown file or the existing root `llms.txt`;
+- never accepting an arbitrary filesystem path from the request;
+- administrator capability and nonce checks;
+- a timestamped backup before each successful replacement;
+- conflict detection when the file changed after the editor was opened;
+- UTF-8 validation, BOM removal, and LF line-ending normalization;
+- a same-directory temporary file followed by atomic replacement when supported;
+- an incremental local health refresh after saving.
+
+The backup copies are stored under `wp-content/bloglogistics-markdown-backups`. The plugin creates an `index.php` and Apache deny rule in that backup directory as a defence-in-depth measure.
 
 ## Incremental scanning
 

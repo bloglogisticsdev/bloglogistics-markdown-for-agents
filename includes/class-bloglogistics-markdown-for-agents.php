@@ -38,6 +38,7 @@ final class BL_Markdown_For_Agents {
         add_action( 'admin_post_bloglogistics_mfa_live_verify', [ __CLASS__, 'handle_live_verify' ] );
         add_action( 'admin_post_bloglogistics_mfa_verify_item', [ __CLASS__, 'handle_verify_item' ] );
         add_action( 'admin_post_bloglogistics_mfa_cleanup_backups', [ __CLASS__, 'handle_cleanup_backups' ] );
+        add_action( 'admin_post_bloglogistics_mfa_save_text_file', [ __CLASS__, 'handle_save_text_file' ] );
         add_action( 'admin_notices', [ __CLASS__, 'render_htaccess_admin_notice' ] );
         add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_admin_assets' ] );
         add_action( 'wp_ajax_bloglogistics_mfa_browser_verify_targets', [ __CLASS__, 'ajax_browser_verify_targets' ] );
@@ -480,6 +481,184 @@ final class BL_Markdown_For_Agents {
         }
 
         return wp_normalize_path( $public_root . $relative );
+    }
+
+    /**
+     * Resolve one existing user-managed text file that this plugin is allowed
+     * to edit. Arbitrary paths are never accepted from a request.
+     *
+     * @return array<string,mixed>|WP_Error
+     */
+    private static function editable_text_target( string $type, int $post_id = 0 ) {
+        $public_root = self::public_root();
+
+        if ( 'llms' === $type ) {
+            $file = wp_normalize_path( $public_root . 'llms.txt' );
+
+            if ( ! self::is_safe_readable_file( $file, $public_root ) ) {
+                return new WP_Error( 'missing_file', __( 'llms.txt was not found or is not readable.', 'bloglogistics-markdown-for-agents' ) );
+            }
+
+            return [
+                'type'        => 'llms',
+                'post_id'     => 0,
+                'file'        => $file,
+                'relative'    => 'llms.txt',
+                'public_url'  => home_url( '/llms.txt' ),
+                'label'       => 'llms.txt',
+                'return_tab'  => 'llms',
+                'return_view' => 'all',
+            ];
+        }
+
+        if ( 'markdown' !== $type || $post_id < 1 ) {
+            return new WP_Error( 'invalid_target', __( 'The requested Markdown file is not a valid editable target.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $post = get_post( $post_id );
+        if ( ! $post instanceof WP_Post || ! in_array( $post->post_type, [ 'post', 'page' ], true ) || 'publish' !== $post->post_status ) {
+            return new WP_Error( 'invalid_post', __( 'The requested WordPress content is not an editable published Page or Post.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        if ( '' === $markdown_url ) {
+            return new WP_Error( 'missing_mapping', __( 'No scanned Markdown file is mapped to this content item.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $file = self::local_file_from_url( $markdown_url, $public_root );
+        if ( null === $file || 'md' !== strtolower( (string) pathinfo( $file, PATHINFO_EXTENSION ) ) || ! self::is_safe_readable_file( $file, $public_root ) ) {
+            return new WP_Error( 'unsafe_target', __( 'The mapped Markdown file could not be resolved safely inside the public site root.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $real_file = realpath( $file );
+        $real_root = realpath( $public_root );
+        if ( false === $real_file || false === $real_root ) {
+            return new WP_Error( 'unsafe_target', __( 'The Markdown file path could not be verified.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $relative = ltrim( substr( wp_normalize_path( $real_file ), strlen( trailingslashit( wp_normalize_path( $real_root ) ) ) ), '/' );
+
+        return [
+            'type'        => 'markdown',
+            'post_id'     => $post_id,
+            'file'        => wp_normalize_path( $real_file ),
+            'relative'    => $relative,
+            'public_url'  => $markdown_url,
+            'label'       => get_the_title( $post_id ),
+            'return_tab'  => 'page' === $post->post_type ? 'pages' : 'posts',
+            'return_view' => 'all',
+        ];
+    }
+
+    /**
+     * Create a timestamped private-ish backup beneath wp-content before the
+     * plain text editor replaces a Markdown or llms.txt file.
+     *
+     * @return string|WP_Error Backup path on success.
+     */
+    private static function backup_text_file( string $file, string $relative ) {
+        $backup_dir = trailingslashit( wp_normalize_path( WP_CONTENT_DIR . '/bloglogistics-markdown-backups' ) );
+
+        if ( ! is_dir( $backup_dir ) && ! wp_mkdir_p( $backup_dir ) ) {
+            return new WP_Error( 'backup_dir', __( 'The Markdown backup directory could not be created.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        if ( ! is_writable( $backup_dir ) ) {
+            return new WP_Error( 'backup_dir', __( 'The Markdown backup directory is not writable.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $index_file = $backup_dir . 'index.php';
+        if ( ! file_exists( $index_file ) ) {
+            @file_put_contents( $index_file, "<?php\n// Silence is golden.\n", LOCK_EX );
+        }
+
+        $deny_file = $backup_dir . '.htaccess';
+        if ( ! file_exists( $deny_file ) ) {
+            $deny = "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
+            @file_put_contents( $deny_file, $deny, LOCK_EX );
+        }
+
+        $safe_name = sanitize_file_name( str_replace( '/', '-', trim( $relative, '/' ) ) );
+        if ( '' === $safe_name ) {
+            $safe_name = 'markdown';
+        }
+
+        $timestamp = wp_date( 'Ymd-His' );
+        $hash      = substr( hash( 'sha256', wp_normalize_path( $file ) ), 0, 12 );
+        $backup    = $backup_dir . $safe_name . '-' . $timestamp . '-' . $hash . '.bak';
+
+        if ( ! @copy( $file, $backup ) ) {
+            return new WP_Error( 'backup_failed', __( 'A backup could not be created, so the file was not changed.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        return $backup;
+    }
+
+    /**
+     * Atomically replace one existing text file after making a backup.
+     *
+     * @return true|WP_Error
+     */
+    private static function write_text_file_safely( array $target, string $contents, string $original_hash ) {
+        $file = (string) $target['file'];
+
+        if ( ! is_writable( $file ) || ! is_writable( dirname( $file ) ) ) {
+            return new WP_Error( 'not_writable', __( 'The file or its directory is not writable. No changes were made.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $current = @file_get_contents( $file );
+        if ( ! is_string( $current ) ) {
+            return new WP_Error( 'read_failed', __( 'The current file could not be read. No changes were made.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        if ( '' === $original_hash || ! hash_equals( hash( 'sha256', $current ), $original_hash ) ) {
+            return new WP_Error( 'changed_on_disk', __( 'The file changed after the editor was opened. Your save was stopped to avoid overwriting newer changes. Reload the editor and try again.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        // Store normalized UTF-8 text with LF line endings and no UTF-8 BOM.
+        $contents = preg_replace( "/\r\n?|\n/", "\n", $contents );
+        $contents = is_string( $contents ) ? $contents : '';
+        if ( str_starts_with( $contents, "\xEF\xBB\xBF" ) ) {
+            $contents = substr( $contents, 3 );
+        }
+
+        $valid_utf8 = function_exists( 'mb_check_encoding' ) ? mb_check_encoding( $contents, 'UTF-8' ) : ( 1 === preg_match( '//u', $contents ) );
+        if ( ! $valid_utf8 ) {
+            return new WP_Error( 'invalid_utf8', __( 'The submitted text is not valid UTF-8. No changes were made.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        if ( strlen( $contents ) > self::VALIDATION_MAX_BYTES ) {
+            return new WP_Error( 'too_large', __( 'The submitted file is larger than the plugin editing limit. No changes were made.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $backup = self::backup_text_file( $file, (string) $target['relative'] );
+        if ( is_wp_error( $backup ) ) {
+            return $backup;
+        }
+
+        $permissions = @fileperms( $file );
+        $temp        = @tempnam( dirname( $file ), '.bl-mfa-edit-' );
+        if ( false === $temp ) {
+            return new WP_Error( 'temp_failed', __( 'A temporary file could not be created. The original file was not changed.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $written = @file_put_contents( $temp, $contents, LOCK_EX );
+        if ( false === $written || $written !== strlen( $contents ) ) {
+            @unlink( $temp );
+            return new WP_Error( 'write_failed', __( 'The temporary file could not be written completely. The original file was not changed.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        if ( is_int( $permissions ) ) {
+            @chmod( $temp, $permissions & 0777 );
+        }
+
+        if ( ! @rename( $temp, $file ) ) {
+            @unlink( $temp );
+            return new WP_Error( 'replace_failed', __( 'The edited file could not replace the original atomically. The original file was not changed.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        clearstatcache( true, $file );
+        return true;
     }
 
     /**
@@ -3110,10 +3289,16 @@ final class BL_Markdown_For_Agents {
             $item      = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
             $live_item = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
             $state     = self::content_item_state( $post_id, $item, $live_item );
-            $title     = get_the_title( $post_id );
-            $edit_link = get_edit_post_link( $post_id );
-            $view_link = get_permalink( $post_id );
-            $md_url    = (string) $state['markdown_url'];
+            $title      = get_the_title( $post_id );
+            $md_url     = (string) $state['markdown_url'];
+            $edit_md_url = self::settings_url(
+                $tab,
+                $view,
+                [
+                    'edit_file' => 'markdown',
+                    'post_id'   => $post_id,
+                ]
+            );
             $verify_url = wp_nonce_url(
                 add_query_arg(
                     [
@@ -3127,26 +3312,14 @@ final class BL_Markdown_For_Agents {
                 'bloglogistics_mfa_verify_item_' . $post_id
             );
 
-            echo '<tr><th scope="row" class="check-column"><input class="bl-mfa-row-select" type="checkbox" name="selected_ids[]" value="' . esc_attr( (string) $post_id ) . '" aria-label="' . esc_attr( sprintf( __( 'Select %s', 'bloglogistics-markdown-for-agents' ), $title ) ) . '"></th><td class="column-title"><strong>';
-            if ( $edit_link ) {
-                echo '<a href="' . esc_url( $edit_link ) . '">' . esc_html( $title ) . '</a>';
-            } else {
-                echo esc_html( $title );
-            }
-            echo '</strong>';
+            echo '<tr><th scope="row" class="check-column"><input class="bl-mfa-row-select" type="checkbox" name="selected_ids[]" value="' . esc_attr( (string) $post_id ) . '" aria-label="' . esc_attr( sprintf( __( 'Select %s', 'bloglogistics-markdown-for-agents' ), $title ) ) . '"></th><td class="column-title"><strong>' . esc_html( $title ) . '</strong>';
             if ( ! empty( $item['markdown_relative'] ) ) {
                 echo '<span class="bl-mfa-health-detail"><code>/' . esc_html( ltrim( (string) $item['markdown_relative'], '/' ) ) . '</code></span>';
             }
             echo '<div class="row-actions">';
             $row_actions = [];
-            if ( $edit_link ) {
-                $row_actions[] = '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit', 'bloglogistics-markdown-for-agents' ) . '</a>';
-            }
-            if ( is_string( $view_link ) && '' !== $view_link ) {
-                $view_label    = 'page' === $post_type ? __( 'View Page', 'bloglogistics-markdown-for-agents' ) : __( 'View Post', 'bloglogistics-markdown-for-agents' );
-                $row_actions[] = '<a href="' . esc_url( $view_link ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $view_label ) . '</a>';
-            }
             if ( ! empty( $state['exists'] ) && '' !== $md_url ) {
+                $row_actions[] = '<a href="' . esc_url( $edit_md_url ) . '">' . esc_html__( 'Edit Markdown', 'bloglogistics-markdown-for-agents' ) . '</a>';
                 $row_actions[] = '<a href="' . esc_url( $md_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'View Markdown', 'bloglogistics-markdown-for-agents' ) . '</a>';
                 $row_actions[] = '<a href="' . esc_url( $verify_url ) . '">' . esc_html__( 'Verify', 'bloglogistics-markdown-for-agents' ) . '</a>';
             }
@@ -3312,7 +3485,15 @@ final class BL_Markdown_For_Agents {
         $local_links  = isset( $llms['local_links'] ) && is_array( $llms['local_links'] ) ? $llms['local_links'] : [];
 
         echo '<h2>' . esc_html__( 'llms.txt', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        echo '<p>' . esc_html__( 'This tab validates your user-managed llms.txt file. The plugin does not create, rewrite, or curate the file.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p>' . esc_html__( 'This tab validates your user-managed llms.txt file. The plugin never generates or curates its contents automatically; the optional plain editor saves only what an administrator explicitly enters.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        if ( $exists ) {
+            $edit_llms_url = self::settings_url( 'llms', 'all', [ 'edit_file' => 'llms' ] );
+            echo '<div class="bl-mfa-file-actions">';
+            echo '<a class="button button-primary" href="' . esc_url( $edit_llms_url ) . '">' . esc_html__( 'Edit llms.txt', 'bloglogistics-markdown-for-agents' ) . '</a>';
+            echo '<a class="button" href="' . esc_url( home_url( '/llms.txt' ) ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'View llms.txt', 'bloglogistics-markdown-for-agents' ) . '</a>';
+            echo '</div>';
+        }
 
         echo '<div class="bl-mfa-health-grid">';
         self::render_dashboard_card( __( 'File', 'bloglogistics-markdown-for-agents' ), $exists ? 1 : 0, ! $health_ready ? 'na' : ( $exists ? 'healthy' : 'problem' ), [], $exists ? __( 'Present', 'bloglogistics-markdown-for-agents' ) : __( 'Missing', 'bloglogistics-markdown-for-agents' ) );
@@ -3492,6 +3673,135 @@ final class BL_Markdown_For_Agents {
         }
     }
 
+    /**
+     * Render the deliberately plain editor for one existing Markdown file or
+     * llms.txt. This editor never converts WordPress content into Markdown and
+     * never creates missing curated files.
+     */
+    private static function render_text_editor( string $type, int $post_id, string $tab, string $view ): void {
+        $target = self::editable_text_target( $type, $post_id );
+
+        if ( is_wp_error( $target ) ) {
+            echo '<div class="notice notice-error inline"><p>' . esc_html( $target->get_error_message() ) . '</p></div>';
+            echo '<p><a class="button" href="' . esc_url( self::settings_url( $tab, $view ) ) . '">' . esc_html__( 'Back', 'bloglogistics-markdown-for-agents' ) . '</a></p>';
+            return;
+        }
+
+        $file     = (string) $target['file'];
+        $contents = @file_get_contents( $file );
+        if ( ! is_string( $contents ) ) {
+            echo '<div class="notice notice-error inline"><p>' . esc_html__( 'The file could not be read.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            return;
+        }
+
+        if ( str_starts_with( $contents, "\xEF\xBB\xBF" ) ) {
+            $contents = substr( $contents, 3 );
+        }
+
+        $modified = @filemtime( $file );
+        $size     = @filesize( $file );
+        $writable = is_writable( $file ) && is_writable( dirname( $file ) );
+        $heading  = 'llms' === $type
+            ? __( 'Edit llms.txt', 'bloglogistics-markdown-for-agents' )
+            : sprintf( __( 'Edit Markdown: %s', 'bloglogistics-markdown-for-agents' ), (string) $target['label'] );
+
+        echo '<div class="bl-mfa-editor-wrap">';
+        echo '<h2>' . esc_html( $heading ) . '</h2>';
+        echo '<p><code>/' . esc_html( ltrim( (string) $target['relative'], '/' ) ) . '</code></p>';
+        echo '<p class="description">' . esc_html__( 'This edits the actual curated text file only. It does not change the WordPress Page or Post and does not generate content from WordPress.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<div class="bl-mfa-editor-meta">';
+        if ( false !== $modified ) {
+            echo '<span><strong>' . esc_html__( 'Last modified:', 'bloglogistics-markdown-for-agents' ) . '</strong> ' . esc_html( wp_date( 'Y-m-d H:i:s', (int) $modified ) ) . '</span>';
+        }
+        if ( false !== $size ) {
+            echo '<span><strong>' . esc_html__( 'Size:', 'bloglogistics-markdown-for-agents' ) . '</strong> ' . esc_html( size_format( (int) $size ) ) . '</span>';
+        }
+        echo '<span><strong>' . esc_html__( 'Writable:', 'bloglogistics-markdown-for-agents' ) . '</strong> ' . esc_html( $writable ? __( 'Yes', 'bloglogistics-markdown-for-agents' ) : __( 'No', 'bloglogistics-markdown-for-agents' ) ) . '</span>';
+        echo '</div>';
+
+        if ( ! $writable ) {
+            echo '<div class="notice notice-error inline"><p>' . esc_html__( 'This file or its directory is not writable. The editor is read-only until server permissions are corrected.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+        }
+
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+        wp_nonce_field( 'bloglogistics_mfa_save_text_file' );
+        echo '<input type="hidden" name="action" value="bloglogistics_mfa_save_text_file">';
+        echo '<input type="hidden" name="file_type" value="' . esc_attr( $type ) . '">';
+        echo '<input type="hidden" name="post_id" value="' . esc_attr( (string) $post_id ) . '">';
+        echo '<input type="hidden" name="original_hash" value="' . esc_attr( hash( 'sha256', @file_get_contents( $file ) ?: '' ) ) . '">';
+        echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
+        echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        echo '<label class="screen-reader-text" for="bl-mfa-text-editor">' . esc_html__( 'Text file contents', 'bloglogistics-markdown-for-agents' ) . '</label>';
+        echo '<textarea id="bl-mfa-text-editor" class="large-text code bl-mfa-text-editor" name="file_contents" rows="30" spellcheck="false"' . disabled( $writable, false, false ) . '>' . esc_textarea( $contents ) . '</textarea>';
+
+        echo '<div class="bl-mfa-editor-actions">';
+        if ( $writable ) {
+            submit_button( 'llms' === $type ? __( 'Save llms.txt', 'bloglogistics-markdown-for-agents' ) : __( 'Save Markdown', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
+        }
+        echo ' <a class="button" href="' . esc_url( self::settings_url( $tab, $view ) ) . '">' . esc_html__( 'Cancel', 'bloglogistics-markdown-for-agents' ) . '</a>';
+        $view_file_label = 'llms' === $type ? __( 'View llms.txt', 'bloglogistics-markdown-for-agents' ) : __( 'View Markdown', 'bloglogistics-markdown-for-agents' );
+        echo ' <a class="button" href="' . esc_url( (string) $target['public_url'] ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $view_file_label ) . '</a>';
+        echo '</div>';
+        echo '</form>';
+
+        echo '<div class="bl-mfa-markdown-help">';
+        echo '<h3>' . esc_html__( 'Simple Markdown', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+        echo '<p>' . esc_html__( 'Keep formatting simple and readable. These are the most useful forms for curated AI-facing text:', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<pre># Main heading\n## Section heading\n### Subsection heading\n\n**Bold text**\n*Italic text*\n\n- Bullet item\n- Another item\n\n[Link text](https://example.com/)\n\nUse blank lines between paragraphs.</pre>';
+        if ( 'llms' === $type ) {
+            echo '<p class="description">' . esc_html__( 'For llms.txt, use clear headings, short descriptions, and direct Markdown links to the curated Markdown resources you want agents to discover.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        }
+        echo '</div>';
+        echo '</div>';
+    }
+
+    /**
+     * Save one administrator-authored Markdown or llms.txt edit.
+     */
+    public static function handle_save_text_file(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You do not have permission to edit Markdown files.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        check_admin_referer( 'bloglogistics_mfa_save_text_file' );
+
+        $type          = isset( $_POST['file_type'] ) ? sanitize_key( wp_unslash( $_POST['file_type'] ) ) : '';
+        $post_id       = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+        $original_hash = isset( $_POST['original_hash'] ) ? sanitize_text_field( wp_unslash( $_POST['original_hash'] ) ) : '';
+        $contents      = isset( $_POST['file_contents'] ) ? (string) wp_unslash( $_POST['file_contents'] ) : '';
+        $context       = self::return_context( 'llms' === $type ? 'llms' : 'pages', 'all' );
+        $target        = self::editable_text_target( $type, $post_id );
+
+        if ( is_wp_error( $target ) ) {
+            wp_die( esc_html( $target->get_error_message() ) );
+        }
+
+        $saved = self::write_text_file_safely( $target, $contents, $original_hash );
+        if ( is_wp_error( $saved ) ) {
+            wp_die(
+                '<h1>' . esc_html__( 'Markdown file was not changed', 'bloglogistics-markdown-for-agents' ) . '</h1><p>' . esc_html( $saved->get_error_message() ) . '</p><p>' . esc_html__( 'Use your browser Back button to return to the editor. Your submitted text may still be available there.', 'bloglogistics-markdown-for-agents' ) . '</p>',
+                esc_html__( 'Save stopped', 'bloglogistics-markdown-for-agents' ),
+                [ 'response' => 409 ]
+            );
+        }
+
+        // Refresh local health data. Incremental scanning revalidates only the
+        // changed file and reuses unchanged validation results for other files.
+        self::scan_markdown_files( false );
+
+        $extra = [
+            'edit_file'                  => $type,
+            'bloglogistics_mfa_message'  => 'file_saved',
+        ];
+        if ( 'markdown' === $type ) {
+            $extra['post_id'] = $post_id;
+        }
+
+        wp_safe_redirect( self::settings_url( $context['tab'], $context['view'], $extra ) );
+        exit;
+    }
+
     public static function render_settings_page(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( esc_html__( 'You do not have permission to access this page.', 'bloglogistics-markdown-for-agents' ) );
@@ -3516,14 +3826,16 @@ final class BL_Markdown_For_Agents {
         echo '<div class="wrap bl-mfa-wrap">';
         echo '<h1>' . esc_html__( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ) . '</h1>';
         echo '<style>
-            .bl-mfa-wrap{max-width:1400px}.bl-mfa-tabs{margin-bottom:18px}.bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:12px 0 20px;max-width:1250px}.bl-mfa-health-card{display:block;box-sizing:border-box;background:#fff;border:1px solid #c3c4c7;border-left-width:4px;border-radius:4px;padding:14px 16px;min-height:116px;text-decoration:none;color:#1d2327}.bl-mfa-health-card:hover{color:#1d2327;box-shadow:0 1px 4px rgba(0,0,0,.12)}.bl-mfa-health-card strong{display:block;font-size:26px;line-height:1.15;margin:5px 0}.bl-mfa-card-label{display:block;font-weight:600}.bl-mfa-card-detail{display:block;color:#50575e;margin-top:4px}.bl-mfa-card-links{display:block;margin-top:8px}.bl-mfa-card-links a{font-weight:600}.bl-mfa-card-healthy{border-left-color:#00a32a;background:#edfaef}.bl-mfa-card-problem{border-left-color:#d63638;background:#fcf0f1}.bl-mfa-card-review{border-left-color:#dba617;background:#fcf9e8}.bl-mfa-card-na{border-left-color:#c3c4c7;background:#f0f0f1}.bl-mfa-status{display:inline-block;border:1px solid transparent;border-radius:999px;padding:2px 8px;font-weight:600;line-height:1.5}.bl-mfa-status-healthy{background:#edfaef;border-color:#00a32a;color:#006b1b}.bl-mfa-status-problem{background:#fcf0f1;border-color:#d63638;color:#8a2424}.bl-mfa-status-review{background:#fcf9e8;border-color:#dba617;color:#755c00}.bl-mfa-status-na{background:#f0f0f1;border-color:#c3c4c7;color:#50575e}.bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}.bl-mfa-health-detail{display:block;color:#646970;margin-top:4px;line-height:1.4}.bl-mfa-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.bl-mfa-actions form{margin:0}.bl-mfa-primary-actions{padding:10px 0}.bl-mfa-code-wrap{word-break:break-word}.bl-mfa-table-wrap{overflow-x:auto}.bl-mfa-filters{margin:8px 0 6px}.bl-mfa-discovery-toggle{display:block;margin-top:8px;color:#50575e}.bl-mfa-overview-meta{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 12px;color:#50575e}.bl-mfa-status-key{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 14px}.bl-mfa-status-key strong{margin-right:2px}.bl-mfa-issue-list{list-style:disc;margin-left:2em}.bl-mfa-how-it-works{max-width:900px}.bl-mfa-health-table .row-actions{position:static}.bl-mfa-health-table code{font-size:12px}@media(max-width:782px){.bl-mfa-health-grid{grid-template-columns:1fr}.bl-mfa-overview-meta{display:block}.bl-mfa-overview-meta span{display:block;margin-bottom:5px}}
+            .bl-mfa-wrap{max-width:1400px}.bl-mfa-tabs{margin-bottom:18px}.bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:12px 0 20px;max-width:1250px}.bl-mfa-health-card{display:block;box-sizing:border-box;background:#fff;border:1px solid #c3c4c7;border-left-width:4px;border-radius:4px;padding:14px 16px;min-height:116px;text-decoration:none;color:#1d2327}.bl-mfa-health-card:hover{color:#1d2327;box-shadow:0 1px 4px rgba(0,0,0,.12)}.bl-mfa-health-card strong{display:block;font-size:26px;line-height:1.15;margin:5px 0}.bl-mfa-card-label{display:block;font-weight:600}.bl-mfa-card-detail{display:block;color:#50575e;margin-top:4px}.bl-mfa-card-links{display:block;margin-top:8px}.bl-mfa-card-links a{font-weight:600}.bl-mfa-card-healthy{border-left-color:#00a32a;background:#edfaef}.bl-mfa-card-problem{border-left-color:#d63638;background:#fcf0f1}.bl-mfa-card-review{border-left-color:#dba617;background:#fcf9e8}.bl-mfa-card-na{border-left-color:#c3c4c7;background:#f0f0f1}.bl-mfa-status{display:inline-block;border:1px solid transparent;border-radius:999px;padding:2px 8px;font-weight:600;line-height:1.5}.bl-mfa-status-healthy{background:#edfaef;border-color:#00a32a;color:#006b1b}.bl-mfa-status-problem{background:#fcf0f1;border-color:#d63638;color:#8a2424}.bl-mfa-status-review{background:#fcf9e8;border-color:#dba617;color:#755c00}.bl-mfa-status-na{background:#f0f0f1;border-color:#c3c4c7;color:#50575e}.bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}.bl-mfa-health-detail{display:block;color:#646970;margin-top:4px;line-height:1.4}.bl-mfa-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.bl-mfa-actions form{margin:0}.bl-mfa-primary-actions{padding:10px 0}.bl-mfa-code-wrap{word-break:break-word}.bl-mfa-table-wrap{overflow-x:auto}.bl-mfa-filters{margin:8px 0 6px}.bl-mfa-discovery-toggle{display:block;margin-top:8px;color:#50575e}.bl-mfa-overview-meta{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 12px;color:#50575e}.bl-mfa-status-key{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 14px}.bl-mfa-status-key strong{margin-right:2px}.bl-mfa-issue-list{list-style:disc;margin-left:2em}.bl-mfa-how-it-works{max-width:900px}.bl-mfa-health-table .row-actions{position:static}.bl-mfa-health-table code{font-size:12px}.bl-mfa-editor-wrap{max-width:1050px}.bl-mfa-text-editor{width:100%;min-height:560px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:13px;line-height:1.55;white-space:pre;tab-size:4}.bl-mfa-editor-meta{display:flex;gap:24px;flex-wrap:wrap;color:#50575e;margin:8px 0 14px}.bl-mfa-editor-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 22px}.bl-mfa-editor-actions .button{margin:0}.bl-mfa-markdown-help{max-width:760px;background:#fff;border:1px solid #c3c4c7;border-left:4px solid #72aee6;padding:14px 18px;margin-top:18px}.bl-mfa-markdown-help h3{margin-top:0}.bl-mfa-markdown-help pre{background:#f6f7f7;border:1px solid #dcdcde;padding:12px;overflow:auto}.bl-mfa-file-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}@media(max-width:782px){.bl-mfa-health-grid{grid-template-columns:1fr}.bl-mfa-overview-meta{display:block}.bl-mfa-overview-meta span{display:block;margin-bottom:5px}.bl-mfa-editor-meta{display:block}.bl-mfa-editor-meta span{display:block;margin-bottom:5px}}
         </style>';
 
         echo '<div class="notice notice-info inline"><p><strong>' . esc_html__( 'Editorial control stays with you.', 'bloglogistics-markdown-for-agents' ) . '</strong> ';
-        echo esc_html__( 'This plugin does not create, rewrite, or curate llms.txt or any Markdown file. It discovers, validates, and verifies the files you maintain.', 'bloglogistics-markdown-for-agents' );
+        echo esc_html__( 'This plugin never generates or rewrites your curated content automatically. Its optional plain text editor saves only the Markdown or llms.txt text that an administrator explicitly enters.', 'bloglogistics-markdown-for-agents' );
         echo '</p></div>';
 
-        if ( 'scanned' === $message ) {
+        if ( 'file_saved' === $message ) {
+            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Text file saved. A timestamped backup of the previous file was created and local health data was refreshed.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+        } elseif ( 'scanned' === $message ) {
             $checked   = isset( $_GET['checked'] ) ? absint( $_GET['checked'] ) : 0;
             $found     = isset( $_GET['found'] ) ? absint( $_GET['found'] ) : 0;
             $removed   = isset( $_GET['removed'] ) ? absint( $_GET['removed'] ) : 0;
@@ -3594,6 +3906,14 @@ final class BL_Markdown_For_Agents {
         }
 
         self::render_settings_tabs( $tab, $page_count, $post_count );
+
+        $edit_file = isset( $_GET['edit_file'] ) ? sanitize_key( wp_unslash( $_GET['edit_file'] ) ) : '';
+        if ( in_array( $edit_file, [ 'markdown', 'llms' ], true ) ) {
+            $edit_post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+            self::render_text_editor( $edit_file, $edit_post_id, $tab, $view );
+            echo '</div>';
+            return;
+        }
 
         if ( 'pages' === $tab ) {
             self::render_content_tab( 'page', 'pages', $view, $health, $live_items );

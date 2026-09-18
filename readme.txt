@@ -4,17 +4,17 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.4.4
+Stable tag: 2.5.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Advertises, validates, and live-verifies user-curated Markdown companion files and llms.txt, with admin health checks and safe .htaccess compatibility.
+Advertises, validates, live-verifies, and safely edits user-curated Markdown companion files and llms.txt, with admin health checks and .htaccess compatibility.
 
 == Description ==
 
 BlogLogistics Markdown for Agents connects WordPress posts and pages to carefully curated static Markdown companion files.
 
-The plugin deliberately does not generate Markdown and does not create or rewrite llms.txt. Users retain full editorial control over all machine-readable content.
+The plugin deliberately does not generate Markdown or derive machine-readable content automatically from WordPress. Users retain full editorial control. Version 2.5.0 adds an optional plain text editor that saves only the existing Markdown or llms.txt file an administrator explicitly chooses to edit.
 
 Typical file locations are:
 
@@ -31,19 +31,19 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the administrator's web browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. These checks do not run on normal public page loads and do not modify Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the administrator's web browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. Version 2.5.0 adds a deliberately simple text-only editor for existing Markdown companions and llms.txt, with backups, conflict detection, UTF-8 normalization, and atomic replacement. None of these tools run on normal public page loads.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
 == Editorial control ==
 
-The plugin does not create, curate, modify, or replace:
+The plugin does not automatically generate, curate, or derive content for:
 
 * `llms.txt`;
 * `/index.md`;
 * any `/path/index.md` companion file.
 
-Those files remain entirely under the site owner's control. This is intentional because machine-readable representations should be reviewed and curated rather than automatically generated from rendered WordPress HTML.
+Those files remain entirely under the site owner's control. Version 2.5.0 provides an optional administrator-only plain text editor for existing files, but it saves only the text the administrator explicitly enters. It does not create missing curated files or convert rendered WordPress HTML into Markdown.
 
 == Installation ==
 
@@ -54,18 +54,24 @@ Those files remain entirely under the site owner's control. This is intentional 
 5. Click **Scan Changes and Refresh Health**. The incremental scan detects companion files, refreshes the Markdown Health Dashboard, validates changed files and llms.txt references, and reuses unchanged encoding-validation results.
 6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 7. Use **Run Live Endpoint Verification** to have your administrator browser check public HTTP status, redirects, Markdown MIME type, and discovery markup.
-8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, and manage discovery or verification actions.
-9. Use the **llms.txt** tab for focused validation and local Markdown-reference health.
+8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, edit an existing Markdown file, view its public Markdown URL, and manage discovery or verification actions.
+9. Use the **llms.txt** tab for focused validation, local Markdown-reference health, and the optional plain text llms.txt editor.
 10. Use **Server & .htaccess** for server diagnostics, rule repair, live server-rule verification, and backup management.
-11. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
+11. Purge any WordPress/CDN page cache after changes that affect discovery markup or cached public file delivery.
 
 == Frequently Asked Questions ==
 
 = Does this plugin generate Markdown files? =
-No. Users create and maintain all Markdown content themselves. The plugin only discovers and advertises existing files.
+No. Users create and curate the Markdown content. Version 2.5.0 can edit an existing Markdown file when an administrator explicitly opens the plain text editor, but it does not generate content or create missing companion files.
 
 = Does this plugin generate llms.txt? =
-No. llms.txt remains a manually curated file under the site owner's full control.
+No. llms.txt remains manually curated. Version 2.5.0 can edit an existing llms.txt file through the plain text editor, but it does not generate or create the file automatically.
+
+= What does the Markdown editor change? =
+Only the selected existing `.md` file or `llms.txt`. It does not edit the WordPress Page or Post. Before a successful save, the plugin creates a timestamped backup under `wp-content/bloglogistics-markdown-backups`, checks that the file has not changed since the editor was opened, writes UTF-8 without a BOM using LF line endings, and replaces the file atomically when the server permits it.
+
+= What Markdown should I use in the editor? =
+Keep it simple: `#`, `##`, and `###` headings, `**bold**`, `*italic*`, bullet lists, ordinary Markdown links, and blank lines between paragraphs. The editor does not prevent other Markdown syntax, but the interface encourages a restrained AI-readable subset.
 
 = Does the plugin check for Markdown files on every page load? =
 No. Filesystem checks occur only when an administrator explicitly runs the scan from BlogLogistics > Markdown for Agents.
@@ -148,6 +154,20 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.5.0 =
+* Add an administrator-only plain text editor for existing Markdown companion files.
+* Replace WordPress Edit/View Page/View Post row actions with Edit Markdown, View Markdown, and Verify.
+* Add Edit llms.txt and View llms.txt actions to the llms.txt tab.
+* Keep the editor deliberately simple and text-only, with a compact Markdown syntax guide.
+* Never generate Markdown from WordPress content and never create missing curated Markdown or llms.txt files.
+* Restrict editing to scanned same-site Markdown files and the existing root llms.txt file; arbitrary filesystem paths are never accepted.
+* Create a timestamped backup before each successful file replacement.
+* Detect on-disk changes after the editor is opened and stop the save instead of overwriting newer content.
+* Normalize saved text to UTF-8 without a BOM and LF line endings.
+* Write through a same-directory temporary file and atomically replace the original when possible.
+* Refresh local health data after a successful save while reusing unchanged validation results for other files.
+* Add no editor or filesystem work to normal public page loads.
 
 = 2.4.4 =
 * Fix false site-wide yellow Review states after verifier upgrades.
