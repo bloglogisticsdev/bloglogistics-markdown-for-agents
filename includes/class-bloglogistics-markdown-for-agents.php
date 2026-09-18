@@ -39,6 +39,9 @@ final class BL_Markdown_For_Agents {
         add_action( 'admin_post_bloglogistics_mfa_verify_item', [ __CLASS__, 'handle_verify_item' ] );
         add_action( 'admin_post_bloglogistics_mfa_cleanup_backups', [ __CLASS__, 'handle_cleanup_backups' ] );
         add_action( 'admin_notices', [ __CLASS__, 'render_htaccess_admin_notice' ] );
+        add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_admin_assets' ] );
+        add_action( 'wp_ajax_bloglogistics_mfa_browser_verify_targets', [ __CLASS__, 'ajax_browser_verify_targets' ] );
+        add_action( 'wp_ajax_bloglogistics_mfa_store_browser_results', [ __CLASS__, 'ajax_store_browser_results' ] );
 
         add_action( 'add_meta_boxes', [ __CLASS__, 'register_editor_meta_box' ] );
         add_action( 'save_post', [ __CLASS__, 'save_editor_options' ], 10, 2 );
@@ -104,10 +107,10 @@ final class BL_Markdown_For_Agents {
 
         self::ensure_htaccess_rule( true );
 
-        // Live verification changed materially in 2.4.2. Preserve previous
-        // results for context, but require one fresh verification pass before
-        // treating them as current.
-        if ( '' !== $stored_version && version_compare( $stored_version, '2.4.2', '<' ) ) {
+        // Live verification changed materially in 2.4.3. Browser-based public
+        // verification replaces origin-server self-requests as the primary
+        // verifier. Preserve old results for context, but require a fresh pass.
+        if ( '' !== $stored_version && version_compare( $stored_version, '2.4.3', '<' ) ) {
             self::mark_saved_live_results_outdated();
         }
 
@@ -2308,6 +2311,50 @@ final class BL_Markdown_For_Agents {
         );
     }
 
+    /**
+     * Load the administrator browser verifier only on this plugin's settings page.
+     * Public visitors never receive this script.
+     */
+    public static function enqueue_admin_assets( string $hook_suffix ): void {
+        unset( $hook_suffix );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
+
+        if ( self::SETTINGS_SLUG !== $page ) {
+            return;
+        }
+
+        $handle = 'bloglogistics-mfa-admin-live-verifier';
+        wp_enqueue_script(
+            $handle,
+            plugins_url( 'assets/admin-live-verifier.js', BLOGLOGISTICS_MFA_FILE ),
+            [],
+            BLOGLOGISTICS_MFA_VERSION,
+            true
+        );
+
+        wp_localize_script(
+            $handle,
+            'BlogLogisticsMFALiveVerifier',
+            [
+                'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
+                'nonce'     => wp_create_nonce( 'bloglogistics_mfa_browser_verify' ),
+                'autoStart' => isset( $_GET['browser_verify'] ) && '1' === (string) wp_unslash( $_GET['browser_verify'] ),
+                'labels'    => [
+                    'starting'  => __( 'Browser verification is starting...', 'bloglogistics-markdown-for-agents' ),
+                    'progress'  => __( 'Browser verification: %1$d of %2$d checked.', 'bloglogistics-markdown-for-agents' ),
+                    'saving'    => __( 'Browser verification finished. Saving results...', 'bloglogistics-markdown-for-agents' ),
+                    'error'     => __( 'Browser verification could not be completed. Reload the page and try again.', 'bloglogistics-markdown-for-agents' ),
+                    'noTargets' => __( 'No Markdown files are available for live verification.', 'bloglogistics-markdown-for-agents' ),
+                ],
+            ]
+        );
+    }
+
     private static function settings_tab(): string {
         $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'overview';
 
@@ -2359,6 +2406,39 @@ final class BL_Markdown_For_Agents {
             'tab'  => $tab,
             'view' => $view,
         ];
+    }
+
+    /**
+     * Per-administrator transient used to hand a verification request from a
+     * normal WordPress form action to the browser-side verifier.
+     */
+    private static function browser_verify_transient_key(): string {
+        return 'bloglogistics_mfa_browser_verify_' . get_current_user_id();
+    }
+
+    /**
+     * Queue a browser-based verification run. An empty ID list means all
+     * detected companions, subject to the normal per-run limit.
+     *
+     * @param array<int,int> $ids Selected post IDs, or an empty array for all.
+     * @param array{tab:string,view:string} $context Return location.
+     */
+    private static function schedule_browser_verification( array $ids, array $context ): void {
+        $ids = array_values( array_unique( array_filter( array_map( 'absint', $ids ) ) ) );
+
+        set_transient(
+            self::browser_verify_transient_key(),
+            [
+                'requested_ids' => $ids,
+                'scope'         => $ids ? 'selected' : 'all',
+                'context'       => [
+                    'tab'  => isset( $context['tab'] ) ? sanitize_key( (string) $context['tab'] ) : 'overview',
+                    'view' => isset( $context['view'] ) ? sanitize_key( (string) $context['view'] ) : 'all',
+                ],
+                'created_at'    => time(),
+            ],
+            10 * MINUTE_IN_SECONDS
+        );
     }
 
     /**
@@ -2913,7 +2993,7 @@ final class BL_Markdown_For_Agents {
         echo '</div>';
 
         self::render_scan_actions( 'overview', 'all' );
-        echo '<p class="description">' . esc_html__( 'The incremental scan performs local administrator-only checks. Live verification is separate because it makes same-site HTTP requests. Neither operation runs during normal public page loads.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p class="description">' . esc_html__( 'The incremental scan performs local administrator-only checks. Live verification runs public requests from your administrator browser, then securely stores the observed status, headers, and discovery results. Neither operation runs during normal public page loads.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         echo '<h2 style="margin-top:2em;">' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
         echo '<ol class="bl-mfa-how-it-works">';
@@ -2957,7 +3037,7 @@ final class BL_Markdown_For_Agents {
         }
 
         echo '<h2>' . esc_html( 'page' === $post_type ? __( 'Pages', 'bloglogistics-markdown-for-agents' ) : __( 'Posts', 'bloglogistics-markdown-for-agents' ) ) . '</h2>';
-        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. Markdown File tells you whether the curated /index.md file exists. Live Delivery checks whether the public HTML page and Markdown file load correctly and whether Markdown is served with the expected MIME type.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. Markdown File tells you whether the curated /index.md file exists. Live Delivery uses your administrator browser to check whether the public HTML page and Markdown file load correctly and whether Markdown is served with the expected MIME type.', 'bloglogistics-markdown-for-agents' ) . '</p>';
         echo '<p class="description">' . esc_html__( 'Discovery is a separate check of the HTML <head>: it confirms whether the page advertises its Markdown file and llms.txt using discovery links. A Markdown file can be perfectly reachable even when discovery markup is missing or stale in cached HTML.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         echo '<ul class="subsubsub bl-mfa-filters">';
@@ -3566,6 +3646,385 @@ final class BL_Markdown_For_Agents {
         exit;
     }
 
+    /**
+     * Return browser-verification targets for the pending administrator run.
+     * URLs are supplied by WordPress; the browser performs the public requests.
+     */
+    public static function ajax_browser_verify_targets(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'You do not have permission to run live Markdown verification.', 'bloglogistics-markdown-for-agents' ) ], 403 );
+        }
+
+        check_ajax_referer( 'bloglogistics_mfa_browser_verify', 'nonce' );
+
+        $request = get_transient( self::browser_verify_transient_key() );
+
+        if ( ! is_array( $request ) ) {
+            wp_send_json_error( [ 'message' => __( 'The browser verification request expired. Start the verification again.', 'bloglogistics-markdown-for-agents' ) ], 410 );
+        }
+
+        $requested_ids = isset( $request['requested_ids'] ) && is_array( $request['requested_ids'] )
+            ? array_values( array_unique( array_filter( array_map( 'absint', $request['requested_ids'] ) ) ) )
+            : [];
+
+        $post_ids = get_posts(
+            [
+                'post_type'              => [ 'post', 'page' ],
+                'post_status'            => 'publish',
+                'numberposts'            => -1,
+                'fields'                 => 'ids',
+                'meta_key'               => self::MARKDOWN_URL_META,
+                'meta_compare'           => 'EXISTS',
+                'orderby'                => 'title',
+                'order'                  => 'ASC',
+                'no_found_rows'          => true,
+                'update_post_meta_cache' => true,
+                'update_post_term_cache' => false,
+            ]
+        );
+        $post_ids = array_values( array_map( 'absint', $post_ids ) );
+
+        if ( $requested_ids ) {
+            $post_ids = array_values(
+                array_filter(
+                    $post_ids,
+                    static fn ( $post_id ): bool => in_array( (int) $post_id, $requested_ids, true )
+                )
+            );
+        }
+
+        $candidate_count = count( $post_ids );
+        $truncated       = $candidate_count > self::LIVE_VERIFY_LIMIT;
+        $post_ids        = array_slice( $post_ids, 0, self::LIVE_VERIFY_LIMIT );
+        $has_llms        = '1' === get_option( self::LLMS_DETECTED_OPTION, '0' );
+        $targets         = [];
+
+        foreach ( $post_ids as $post_id ) {
+            $html_url     = get_permalink( $post_id );
+            $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+
+            if ( ! is_string( $html_url ) || '' === $html_url || '' === $markdown_url ) {
+                continue;
+            }
+
+            $disabled  = self::is_discovery_disabled( $post_id );
+            $targets[] = [
+                'postId'         => (int) $post_id,
+                'htmlUrl'        => esc_url_raw( $html_url ),
+                'markdownUrl'    => esc_url_raw( $markdown_url ),
+                'llmsUrl'        => esc_url_raw( home_url( '/llms.txt' ) ),
+                'disabled'       => $disabled,
+                'expectMarkdown' => ! $disabled,
+                'expectLlms'     => ! $disabled && $has_llms,
+            ];
+        }
+
+        $request['target_ids']      = array_values( array_map( static fn ( $target ): int => (int) $target['postId'], $targets ) );
+        $request['candidate_count'] = $candidate_count;
+        $request['truncated']       = $truncated;
+        set_transient( self::browser_verify_transient_key(), $request, 10 * MINUTE_IN_SECONDS );
+
+        wp_send_json_success(
+            [
+                'targets'        => $targets,
+                'candidateCount' => $candidate_count,
+                'truncated'      => $truncated,
+            ]
+        );
+    }
+
+    /**
+     * Turn browser observations into the plugin's saved live-health format.
+     * Status classification is deliberately performed server-side rather than
+     * trusting JavaScript to decide whether something is Healthy/Review/Problem.
+     *
+     * @param array<string,mixed> $observation Browser-provided facts.
+     * @return array<string,mixed>
+     */
+    private static function browser_observation_to_live_item( int $post_id, array $observation, bool $has_llms ): array {
+        $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        $html_url     = get_permalink( $post_id );
+        $disabled     = self::is_discovery_disabled( $post_id );
+        $html_status  = isset( $observation['html_status'] ) ? absint( $observation['html_status'] ) : 0;
+        $md_status    = isset( $observation['markdown_status'] ) ? absint( $observation['markdown_status'] ) : 0;
+        $content_type = isset( $observation['content_type'] ) ? sanitize_text_field( (string) $observation['content_type'] ) : '';
+        $mime_state   = self::markdown_mime_state( $content_type );
+        $html_error   = isset( $observation['html_error'] ) ? sanitize_text_field( (string) $observation['html_error'] ) : '';
+        $md_error     = isset( $observation['markdown_error'] ) ? sanitize_text_field( (string) $observation['markdown_error'] ) : '';
+        $markdown_found = ! empty( $observation['markdown_discovery_found'] );
+        $llms_found     = ! empty( $observation['llms_discovery_found'] );
+        $expect_markdown = ! $disabled;
+        $expect_llms     = ! $disabled && $has_llms;
+        $delivery_issues   = [];
+        $delivery_warnings = [];
+        $discovery_warnings = [];
+
+        // A browser/network exception means verification was inconclusive, not
+        // that the public resource was proven broken.
+        if ( '' !== $html_error ) {
+            $delivery_warnings[] = 'html_request_error';
+        } elseif ( 200 !== $html_status ) {
+            $delivery_issues[] = 'html_status';
+        }
+
+        if ( '' !== $md_error ) {
+            $delivery_warnings[] = 'markdown_request_error';
+        } elseif ( 200 !== $md_status ) {
+            $delivery_issues[] = 'markdown_status';
+        }
+
+        if ( 200 === $md_status && '' === $md_error ) {
+            if ( 'warning' === $mime_state ) {
+                $delivery_warnings[] = 'markdown_mime';
+            } elseif ( 'missing' === $mime_state ) {
+                $delivery_warnings[] = 'markdown_mime_unconfirmed';
+            } elseif ( 'bad' === $mime_state ) {
+                $delivery_issues[] = 'markdown_mime';
+            }
+        }
+
+        $html_redirected = ! empty( $observation['html_redirected'] );
+        $md_redirected   = ! empty( $observation['markdown_redirected'] );
+
+        if ( $html_redirected || $md_redirected ) {
+            $delivery_warnings[] = 'redirected';
+        }
+
+        $discovery_issues = [];
+
+        if ( 200 === $html_status && '' === $html_error ) {
+            if ( $expect_markdown && ! $markdown_found ) {
+                $discovery_warnings[] = 'missing_markdown_discovery';
+            } elseif ( ! $expect_markdown && $markdown_found ) {
+                $discovery_warnings[] = 'unexpected_markdown_discovery';
+            }
+
+            if ( $expect_llms && ! $llms_found ) {
+                $discovery_warnings[] = 'missing_llms_discovery';
+            } elseif ( ! $expect_llms && $llms_found ) {
+                $discovery_warnings[] = 'unexpected_llms_discovery';
+            }
+        }
+
+        $delivery_issues    = array_values( array_unique( $delivery_issues ) );
+        $delivery_warnings  = array_values( array_unique( $delivery_warnings ) );
+        $discovery_warnings = array_values( array_unique( $discovery_warnings ) );
+        $issues             = array_values( array_unique( array_merge( $delivery_issues, $discovery_issues ) ) );
+        $warnings           = array_values( array_unique( array_merge( $delivery_warnings, $discovery_warnings ) ) );
+        $discovery_passed   = empty( $discovery_issues );
+
+        return [
+            'post_id'                 => $post_id,
+            'checked_at'              => time(),
+            'verification_source'     => 'browser',
+            'html_url'                => is_string( $html_url ) ? $html_url : '',
+            'markdown_url'            => $markdown_url,
+            'disabled'                => $disabled,
+            'html_initial_status'     => isset( $observation['html_initial_status'] ) ? absint( $observation['html_initial_status'] ) : $html_status,
+            'html_status'             => $html_status,
+            'html_redirected'         => $html_redirected,
+            'markdown_initial_status' => isset( $observation['markdown_initial_status'] ) ? absint( $observation['markdown_initial_status'] ) : $md_status,
+            'markdown_status'         => $md_status,
+            'markdown_redirected'     => $md_redirected,
+            'content_type'            => $content_type,
+            'mime_state'              => $mime_state,
+            'markdown_fresh_content_type' => '',
+            'markdown_fresh_mime_state'   => '',
+            'markdown_mime_cache_state'   => 'browser',
+            'markdown_recheck_status'     => isset( $observation['markdown_recheck_status'] ) ? absint( $observation['markdown_recheck_status'] ) : 0,
+            'expect_markdown'         => $expect_markdown,
+            'expect_llms'             => $expect_llms,
+            'discovery'               => [
+                'passed'         => empty( $discovery_warnings ),
+                'markdown_found' => $markdown_found,
+                'llms_found'     => $llms_found,
+                'issues'         => $discovery_warnings,
+            ],
+            'discovery_fresh'         => [],
+            'discovery_cache_state'   => 'browser',
+            'discovery_recheck_status'=> isset( $observation['html_recheck_status'] ) ? absint( $observation['html_recheck_status'] ) : 0,
+            'delivery_issues'         => $delivery_issues,
+            'delivery_warnings'       => $delivery_warnings,
+            'discovery_issues'        => $discovery_issues,
+            'discovery_warnings'      => $discovery_warnings,
+            'issues'                  => $issues,
+            'warnings'                => $warnings,
+            'delivery_passed'         => empty( $delivery_issues ),
+            'discovery_passed'        => $discovery_passed,
+            'passed'                  => empty( $issues ),
+            'outdated'                => false,
+            'browser_retry_used'      => ! empty( $observation['retry_used'] ),
+        ];
+    }
+
+    /**
+     * Save factual observations collected by the administrator's browser.
+     */
+    public static function ajax_store_browser_results(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'You do not have permission to save live Markdown verification.', 'bloglogistics-markdown-for-agents' ) ], 403 );
+        }
+
+        check_ajax_referer( 'bloglogistics_mfa_browser_verify', 'nonce' );
+
+        $request = get_transient( self::browser_verify_transient_key() );
+
+        if ( ! is_array( $request ) ) {
+            wp_send_json_error( [ 'message' => __( 'The browser verification request expired. Start the verification again.', 'bloglogistics-markdown-for-agents' ) ], 410 );
+        }
+
+        $target_ids = isset( $request['target_ids'] ) && is_array( $request['target_ids'] )
+            ? array_values( array_unique( array_filter( array_map( 'absint', $request['target_ids'] ) ) ) )
+            : [];
+        $raw_json = isset( $_POST['results'] ) ? (string) wp_unslash( $_POST['results'] ) : '[]';
+        $decoded  = json_decode( $raw_json, true );
+        $decoded  = is_array( $decoded ) ? $decoded : [];
+        $by_id    = [];
+
+        foreach ( $decoded as $observation ) {
+            if ( ! is_array( $observation ) ) {
+                continue;
+            }
+
+            $post_id = isset( $observation['post_id'] ) ? absint( $observation['post_id'] ) : 0;
+            if ( $post_id && in_array( $post_id, $target_ids, true ) ) {
+                $by_id[ $post_id ] = $observation;
+            }
+        }
+
+        $health        = get_option( self::HEALTH_OPTION, [] );
+        $health        = is_array( $health ) ? $health : [];
+        $previous_live = isset( $health['live'] ) && is_array( $health['live'] ) ? $health['live'] : [];
+        $health_items  = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
+        $scope         = isset( $request['scope'] ) && 'selected' === $request['scope'] ? 'selected' : 'all';
+        $live_items    = 'selected' === $scope && isset( $previous_live['items'] ) && is_array( $previous_live['items'] )
+            ? $previous_live['items']
+            : [];
+        $has_llms      = '1' === get_option( self::LLMS_DETECTED_OPTION, '0' );
+        $checked       = 0;
+        $passed        = 0;
+        $reviewed      = 0;
+        $failed        = 0;
+        $mime_warnings = 0;
+        $mime_failures = 0;
+        $discovery_findings = 0;
+        $redirected    = 0;
+        $request_errors = 0;
+
+        foreach ( $target_ids as $post_id ) {
+            $observation = isset( $by_id[ $post_id ] ) ? $by_id[ $post_id ] : [
+                'post_id'        => $post_id,
+                'html_error'     => __( 'No browser result was returned for this item.', 'bloglogistics-markdown-for-agents' ),
+                'markdown_error' => __( 'No browser result was returned for this item.', 'bloglogistics-markdown-for-agents' ),
+            ];
+            $item = self::browser_observation_to_live_item( $post_id, $observation, $has_llms );
+            $scan_item = isset( $health_items[ $post_id ] ) && is_array( $health_items[ $post_id ] ) ? $health_items[ $post_id ] : [];
+            $item['scan_signature'] = isset( $scan_item['scan_signature'] ) ? (string) $scan_item['scan_signature'] : '';
+            $live_items[ $post_id ] = $item;
+            $checked++;
+
+            if ( ! empty( $item['issues'] ) ) {
+                $failed++;
+            } elseif ( ! empty( $item['warnings'] ) ) {
+                $reviewed++;
+            } else {
+                $passed++;
+            }
+
+            if ( in_array( 'markdown_mime', (array) $item['delivery_issues'], true ) ) {
+                $mime_failures++;
+            } elseif (
+                in_array( 'markdown_mime', (array) $item['delivery_warnings'], true )
+                || in_array( 'markdown_mime_unconfirmed', (array) $item['delivery_warnings'], true )
+            ) {
+                $mime_warnings++;
+            }
+
+            if ( ! empty( $item['discovery_warnings'] ) || ! empty( $item['discovery_issues'] ) ) {
+                $discovery_findings++;
+            }
+
+            if ( ! empty( $item['html_redirected'] ) || ! empty( $item['markdown_redirected'] ) ) {
+                $redirected++;
+            }
+
+            if (
+                in_array( 'html_request_error', (array) $item['delivery_warnings'], true )
+                || in_array( 'markdown_request_error', (array) $item['delivery_warnings'], true )
+            ) {
+                $request_errors++;
+            }
+        }
+
+        $outdated_count = 0;
+        foreach ( $live_items as $saved_live_item ) {
+            if ( is_array( $saved_live_item ) && ! empty( $saved_live_item['outdated'] ) ) {
+                $outdated_count++;
+            }
+        }
+
+        $live = [
+            'verified_at'        => time(),
+            'verification_source'=> 'browser',
+            'scope'              => $scope,
+            'candidate_count'    => isset( $request['candidate_count'] ) ? absint( $request['candidate_count'] ) : count( $target_ids ),
+            'checked'            => $checked,
+            'passed'             => $passed,
+            'reviewed'           => $reviewed,
+            'failed'             => $failed,
+            'mime_warnings'      => $mime_warnings,
+            'mime_failures'      => $mime_failures,
+            'discovery_failures' => $discovery_findings,
+            'redirected'         => $redirected,
+            'request_errors'     => $request_errors,
+            'outdated_count'     => $outdated_count,
+            'truncated'          => ! empty( $request['truncated'] ),
+            'items'              => $live_items,
+        ];
+
+        $health['live'] = $live;
+        update_option( self::HEALTH_OPTION, $health, false );
+        delete_transient( self::browser_verify_transient_key() );
+
+        $context = isset( $request['context'] ) && is_array( $request['context'] )
+            ? $request['context']
+            : [ 'tab' => 'overview', 'view' => 'all' ];
+        $tab  = isset( $context['tab'] ) ? sanitize_key( (string) $context['tab'] ) : 'overview';
+        $view = isset( $context['view'] ) ? sanitize_key( (string) $context['view'] ) : 'all';
+
+        if ( ! in_array( $tab, [ 'overview', 'pages', 'posts', 'llms', 'server' ], true ) ) {
+            $tab = 'overview';
+        }
+        if ( ! in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'discovery', 'disabled' ], true ) ) {
+            $view = 'all';
+        }
+
+        $redirect = add_query_arg(
+            [
+                'page'                      => self::SETTINGS_SLUG,
+                'tab'                       => $tab,
+                'view'                      => $view,
+                'bloglogistics_mfa_message' => 'live_verified',
+                'checked'                   => $checked,
+                'passed'                    => $passed,
+                'reviewed'                  => $reviewed,
+                'failed'                    => $failed,
+                'truncated'                 => ! empty( $request['truncated'] ) ? 1 : 0,
+            ],
+            admin_url( 'admin.php' )
+        );
+
+        wp_send_json_success(
+            [
+                'redirectUrl' => $redirect,
+                'checked'     => $checked,
+                'passed'      => $passed,
+                'reviewed'    => $reviewed,
+                'failed'      => $failed,
+            ]
+        );
+    }
+
     public static function handle_live_verify(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( esc_html__( 'You do not have permission to run live Markdown verification.', 'bloglogistics-markdown-for-agents' ) );
@@ -3573,20 +4032,15 @@ final class BL_Markdown_For_Agents {
 
         check_admin_referer( 'bloglogistics_mfa_live_verify' );
         $context = self::return_context();
-        $result  = self::verify_live_endpoints();
+        self::schedule_browser_verification( [], $context );
 
         wp_safe_redirect(
             add_query_arg(
                 [
-                    'page'                      => self::SETTINGS_SLUG,
-                    'tab'                       => $context['tab'],
-                    'view'                      => $context['view'],
-                    'bloglogistics_mfa_message' => 'live_verified',
-                    'checked'                   => (int) $result['checked'],
-                    'passed'                    => (int) $result['passed'],
-                    'reviewed'                  => (int) ( $result['reviewed'] ?? 0 ),
-                    'failed'                    => (int) $result['failed'],
-                    'truncated'                 => ! empty( $result['truncated'] ) ? 1 : 0,
+                    'page'           => self::SETTINGS_SLUG,
+                    'tab'            => $context['tab'],
+                    'view'           => $context['view'],
+                    'browser_verify' => 1,
                 ],
                 admin_url( 'admin.php' )
             )
@@ -3608,20 +4062,15 @@ final class BL_Markdown_For_Agents {
             wp_die( esc_html__( 'The selected content could not be verified.', 'bloglogistics-markdown-for-agents' ) );
         }
 
-        $result = self::verify_live_endpoints( [ $post_id ] );
+        self::schedule_browser_verification( [ $post_id ], $context );
 
         wp_safe_redirect(
             add_query_arg(
                 [
-                    'page'                      => self::SETTINGS_SLUG,
-                    'tab'                       => $context['tab'],
-                    'view'                      => $context['view'],
-                    'bloglogistics_mfa_message' => 'live_verified',
-                    'checked'                   => (int) $result['checked'],
-                    'passed'                    => (int) $result['passed'],
-                    'reviewed'                  => (int) ( $result['reviewed'] ?? 0 ),
-                    'failed'                    => (int) $result['failed'],
-                    'truncated'                 => 0,
+                    'page'           => self::SETTINGS_SLUG,
+                    'tab'            => $context['tab'],
+                    'view'           => $context['view'],
+                    'browser_verify' => 1,
                 ],
                 admin_url( 'admin.php' )
             )
@@ -3738,11 +4187,24 @@ final class BL_Markdown_For_Agents {
         self::scan_markdown_files( false, $force_ids );
 
         if ( $selected_ids && 'verify' === $bulk_action ) {
-            $live     = self::verify_live_endpoints( $selected_ids );
-            $affected = (int) $live['checked'];
+            self::schedule_browser_verification( $selected_ids, $context );
+            $affected = count( $selected_ids );
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'           => self::SETTINGS_SLUG,
+                        'tab'            => $context['tab'],
+                        'view'           => $context['view'],
+                        'browser_verify' => 1,
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
         }
 
-        $message = in_array( $bulk_action, [ 'disable', 'enable', 'rescan', 'verify' ], true )
+        $message = in_array( $bulk_action, [ 'disable', 'enable', 'rescan' ], true )
             ? 'bulk_done'
             : 'exclusions_saved';
 

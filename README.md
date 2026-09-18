@@ -15,7 +15,7 @@ Users create those files themselves. The plugin discovers them during an adminis
 3. In WordPress, open **BlogLogistics > Markdown for Agents**.
 4. Click **Scan Changes and Refresh Health**. The incremental scan checks file existence, timestamps, and sizes, while reusing previous encoding validation for unchanged files.
 5. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
-6. Use **Run Live Endpoint Verification** to check public HTML/Markdown delivery, Markdown MIME type, and discovery markup. Discovery is checked against the normal public HTML first and, only when needed, against one cache-busting recheck to distinguish stale cached HTML from genuinely missing markup.
+6. Use **Run Live Endpoint Verification** to have your administrator browser check public HTML/Markdown delivery, Markdown MIME type, and discovery markup. When an initial result fails or is uncertain, one fresh browser retry is used, and a successful retry becomes the current result without a stale-cache warning.
 7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, manage discovery, and verify selected content.
 8. Use the **llms.txt** tab for focused validation and local Markdown-reference health.
 9. Use **Server & .htaccess** for server compatibility, Markdown MIME delivery, rule repair, and backup management.
@@ -36,14 +36,14 @@ The administrator-only health snapshot reports:
 - live delivery results when live verification has been run;
 - Markdown MIME type findings;
 - discovery-link verification kept separate from file reachability;
-- stale-cache discovery warnings when cached HTML differs from a cache-busting recheck;
+- browser-verified public delivery and discovery results, with one fresh retry when an initial result is uncertain;
 - saved live results that may need re-verification after a later scan detects relevant changes.
 
 The stale-file indicator is deliberately labelled **possibly stale**. It compares timestamps rather than semantic content, and deployment tools can change filesystem timestamps.
 
 ## Administrator interface
 
-Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 further improves reliability by supporting discovery on the configured WordPress Posts page and by treating cache/header discrepancies as Review items rather than false red delivery failures:
+Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moves normal live endpoint verification into the administrator's browser, avoiding misleading origin-server self-request results behind CDN and cache layers:
 
 - **Overview** provides linked Markdown Health Dashboard cards and the main scan/live-verification actions.
 - **Pages** shows only WordPress pages in one consolidated health and discovery table.
@@ -78,23 +78,28 @@ When either the permalink compatibility rule or the Markdown MIME rule is missin
 
 ## Live endpoint verification
 
-Live verification is separate from the local scan because it makes public same-site HTTP requests. It checks up to 75 detected Markdown files per run. **Live Delivery** and **Discovery** are reported separately so a reachable Markdown file is not presented as broken merely because cached HTML is missing discovery markup. It records:
+Live verification is separate from the local scan. Version 2.4.3 runs the normal endpoint checks from the administrator's web browser rather than asking the WordPress origin server to request its own public URLs. This better reflects the request path used by a real browser when Cloudflare, a CDN, page caching, or other edge infrastructure sits in front of WordPress.
+
+The verifier checks up to 75 detected Markdown files per run and records:
 
 - WordPress page HTTP status;
 - Markdown companion HTTP status;
-- whether either endpoint redirected;
+- whether either canonical endpoint redirected;
 - the Markdown `Content-Type` response header;
 - whether `text/markdown` is returned;
 - whether the expected `rel="alternate"` Markdown link is present on eligible pages;
 - whether the expected `rel="describedby"` link to `llms.txt` is present when appropriate;
-- whether discovery markup remains absent on pages where discovery is disabled;
-- whether the canonical public HTML appears stale when a cache-busting recheck contains the expected discovery markup.
+- whether discovery markup remains absent on pages where discovery is disabled.
 
-The normal canonical page is checked first because that reflects what an agent may actually receive. If discovery markup is missing or unexpectedly present, the plugin performs one cache-busting recheck. If the recheck is correct, the row is reported as **Review** for stale cached HTML rather than as a broken Markdown endpoint. If the recheck still lacks the expected discovery markup, Discovery is reported as **Review**. The Markdown file's actual HTTP delivery remains a separate result. Version 2.4.2 also supports the configured WordPress Posts page, which WordPress exposes as an `is_home()` archive rather than a singular Page request.
+The browser first checks the normal public URL anonymously. If the initial HTML or Markdown request fails, if Markdown does not return the preferred MIME type, or if discovery markup does not match the expected state, the browser performs one fresh retry with a unique query string and no-cache request options. **A successful fresh retry wins.** The row is stored as Healthy when the fresh result verifies correctly; the plugin does not create a Review warning merely because the first request saw stale cache state.
 
-A later local scan no longer discards saved live results. When a relevant page/Markdown scan signature or the presence of `llms.txt` changes, the previous live result is retained and marked **Review** until live verification is run again.
+Confirmed non-200 responses and persistent incorrect MIME types remain Problems. A browser/network exception is a Review because an exception does not prove the public endpoint itself is unavailable. `text/plain`, `text/x-markdown`, and `application/markdown` remain usable-but-non-preferred MIME warnings. A missing Content-Type on an otherwise successful HTTP 200 Markdown response is also a Review.
 
-`text/markdown` is treated as the preferred Markdown MIME type. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. If a canonical HTTP 200 Markdown response has a missing or incorrect Content-Type, version 2.4.2 performs one cache-busting Markdown recheck. A fresh preferred MIME result is reported as **Review** for stale cached headers. A missing header that cannot be confirmed by the server-side verifier is also **Review** rather than a red delivery failure; an explicitly incorrect MIME type that persists on the fresh recheck remains a **Problem**.
+**Live Delivery** and **Discovery** remain separate. Discovery mismatches on an otherwise reachable HTML page are Review findings rather than file-delivery failures. The configured WordPress Posts page is supported even though WordPress exposes it as an `is_home()` archive rather than a singular Page request.
+
+All-site verification, single-row **Verify**, and the bulk **Live verify selected** action use the same browser-based verifier. Results are sent back to WordPress through a nonce-protected administrator AJAX action and stored in the health snapshot. None of this verification runs during normal public page loads.
+
+A later local scan does not discard saved live results. When a relevant page/Markdown scan signature or the presence of `llms.txt` changes, the previous live result is retained and marked **Review** until live verification is run again.
 
 ## Bulk management
 

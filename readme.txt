@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.4.2
+Stable tag: 2.4.3
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixes discovery for the configured WordPress Posts page, makes Markdown MIME verification cache-aware, and treats reachable files with an unconfirmed Content-Type or discovery-only mismatches as Review instead of red delivery failures. These checks do not run on normal public page loads and do not modify Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moves normal live endpoint verification into the administrator's web browser so the public URLs are checked from a real browser request path rather than by the WordPress origin server requesting itself. A successful fresh retry wins without creating a stale-cache warning. These checks do not run on normal public page loads and do not modify Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -53,7 +53,7 @@ Those files remain entirely under the site owner's control. This is intentional 
 4. Go to BlogLogistics > Markdown for Agents.
 5. Click **Scan Changes and Refresh Health**. The incremental scan detects companion files, refreshes the Markdown Health Dashboard, validates changed files and llms.txt references, and reuses unchanged encoding-validation results.
 6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
-7. Use **Run Live Endpoint Verification** to check public HTTP status, redirects, Markdown MIME type, and discovery markup.
+7. Use **Run Live Endpoint Verification** to have your administrator browser check public HTTP status, redirects, Markdown MIME type, and discovery markup.
 8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, and manage discovery or verification actions.
 9. Use the **llms.txt** tab for focused validation and local Markdown-reference health.
 10. Use **Server & .htaccess** for server diagnostics, rule repair, live server-rule verification, and backup management.
@@ -80,13 +80,13 @@ If the WordPress post or page was modified more than 60 seconds after the Markdo
 It checks that llms.txt exists and is readable, validates UTF-8 encoding, reports common encoding corruption, checks for a recommended H1 heading, detects duplicate links, and verifies same-site Markdown links against local files. External links are not requested.
 
 = Does the health scan make external HTTP requests? =
-The local Markdown and llms.txt health scan reads local files only. Live Endpoint Verification is a separate administrator action that makes same-site HTTP requests to verify public delivery. The existing .htaccess coexistence verification can also make a same-site request when a suitable companion is available.
+The local Markdown and llms.txt health scan reads local files only. Live Endpoint Verification is a separate administrator action that runs public requests from the administrator's browser and securely stores the observed results. The existing .htaccess coexistence verification is a separate server-side diagnostic and can still make a same-site request when a suitable companion is available.
 
 = What does Live Endpoint Verification check? =
-It checks the WordPress page and Markdown companion HTTP status, records redirects, checks the Markdown Content-Type response header, and verifies the expected rel="alternate" Markdown discovery link and llms.txt rel="describedby" link. If Markdown returns HTTP 200 but its Content-Type is missing or incorrect, version 2.4.2 performs one cache-busting Markdown recheck before classifying the result. Pages with discovery disabled are checked to confirm those plugin discovery links are absent.
+It asks the administrator's browser to check the WordPress page and Markdown companion HTTP status, redirects, Markdown Content-Type response header, and expected rel="alternate" Markdown and llms.txt rel="describedby" discovery links. When an initial browser request fails or returns an uncertain result, version 2.4.3 performs one fresh retry. If that retry succeeds, the successful result is used without a stale-cache warning. Pages with discovery disabled are checked to confirm those plugin discovery links are absent.
 
 = What Markdown MIME type is preferred? =
-`text/markdown` is preferred. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. A missing Content-Type on an otherwise reachable HTTP 200 Markdown file is a Review because some server/CDN paths do not expose the header consistently to WordPress's server-side verifier. An explicitly incorrect MIME type that persists on a fresh recheck remains a Problem.
+`text/markdown` is preferred. `text/plain`, `text/x-markdown`, and `application/markdown` are reported as usable warnings rather than hard failures. A missing Content-Type on an otherwise reachable HTTP 200 Markdown file is a Review. An explicitly incorrect MIME type that persists in the browser after one fresh retry remains a Problem.
 
 = What does incremental scanning mean? =
 Every scan still checks expected file existence, timestamps, and sizes so additions and removals are detected. If a companion's scan signature is unchanged, the plugin reuses its previous encoding-validation result instead of reading and validating the full file again. Use **Force Full Rescan** to bypass that reuse.
@@ -148,6 +148,18 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.4.3 =
+* Move normal Live Endpoint Verification from WordPress origin-server self-requests to the administrator's browser.
+* Check public HTML and Markdown URLs as anonymous browser requests and securely save the observed results back to WordPress.
+* Retry an initial HTTP, MIME, or discovery failure once with a fresh cache-busting browser request.
+* Treat a successful fresh retry as the current Healthy result instead of creating a stale-cache Review warning.
+* Recheck non-200 Markdown responses as well as MIME and discovery mismatches before confirming a Problem.
+* Classify browser/network exceptions as Review because a request exception does not prove the public endpoint is broken.
+* Keep Live Delivery and Discovery separate, with discovery mismatches remaining Review findings when the underlying page is reachable.
+* Route all-site, single-item, and bulk live verification through the same browser-based verifier.
+* Mark saved pre-2.4.3 live results for one fresh browser verification pass after upgrade.
+* Add no browser-verification work to normal public page loads.
 
 = 2.4.2 =
 * Fixed discovery output for the configured WordPress Posts page, which is an `is_home()` archive rather than a singular Page request.
