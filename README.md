@@ -43,7 +43,7 @@ The stale-file indicator is deliberately labelled **possibly stale**. It compare
 
 ## Administrator interface
 
-Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moves normal live endpoint verification into the administrator's browser, avoiding misleading origin-server self-request results behind CDN and cache layers:
+Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moved normal live endpoint verification into the administrator's browser. Version 2.4.4 prevents unverified or inconclusive checks from being presented as site-health warnings:
 
 - **Overview** provides linked Markdown Health Dashboard cards and the main scan/live-verification actions.
 - **Pages** shows only WordPress pages in one consolidated health and discovery table.
@@ -78,7 +78,7 @@ When either the permalink compatibility rule or the Markdown MIME rule is missin
 
 ## Live endpoint verification
 
-Live verification is separate from the local scan. Version 2.4.3 runs the normal endpoint checks from the administrator's web browser rather than asking the WordPress origin server to request its own public URLs. This better reflects the request path used by a real browser when Cloudflare, a CDN, page caching, or other edge infrastructure sits in front of WordPress.
+Live verification is separate from the local scan. Version 2.4.3 runs the normal endpoint checks from the administrator's web browser rather than asking the WordPress origin server to request its own public URLs. This better reflects the request path used by a real browser when Cloudflare, a CDN, page caching, or other edge infrastructure sits in front of WordPress. Version 2.4.4 treats outdated saved results and browser/network request exceptions as Not verified instead of Review, and a successful redirect is recorded without changing a healthy result to yellow.
 
 The verifier checks up to 75 detected Markdown files per run and records:
 

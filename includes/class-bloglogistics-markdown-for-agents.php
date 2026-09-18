@@ -2536,10 +2536,17 @@ final class BL_Markdown_For_Agents {
         $delivery_warnings  = array_values( array_unique( $delivery_warnings ) );
         $discovery_warnings = array_values( array_unique( $discovery_warnings ) );
 
+        // Outdated saved verification is not a health finding. It means only
+        // that a fresh check is required. Likewise, browser/network request
+        // exceptions are inconclusive rather than evidence of a broken URL.
+        $request_inconclusive_codes = [ 'html_request_error', 'markdown_request_error' ];
+        $request_inconclusive       = $live && (bool) array_intersect( $request_inconclusive_codes, $delivery_warnings );
+        $severity_delivery_warnings = array_values( array_diff( $delivery_warnings, $request_inconclusive_codes, [ 'redirected' ] ) );
+
         $live_bad         = $live && ! $outdated && ! empty( $delivery_issues );
-        $live_review      = $live && ( $outdated || ( ! $live_bad && ! empty( $delivery_warnings ) ) );
+        $live_review      = $live && ! $outdated && ! $live_bad && ! $request_inconclusive && ! empty( $severity_delivery_warnings );
         $discovery_bad    = false;
-        $discovery_review = $live && ( $outdated || ! empty( $discovery_warnings ) );
+        $discovery_review = $live && ! $outdated && ! empty( $discovery_warnings );
         $missing          = $scanned && ! $exists && ! $disabled;
         $attention        = $missing || $stale || $enc_bad || $enc_bom || $live_bad || $live_review || $discovery_bad || $discovery_review;
 
@@ -2554,10 +2561,12 @@ final class BL_Markdown_For_Agents {
             'encoding_bom'       => $enc_bom,
             'live'               => $live,
             'live_outdated'      => $outdated,
+            'live_inconclusive'  => $request_inconclusive,
             'live_bad'           => $live_bad,
             'live_review'        => $live_review,
             'delivery_issues'    => $delivery_issues,
             'delivery_warnings'  => $delivery_warnings,
+            'severity_delivery_warnings' => $severity_delivery_warnings,
             'discovery_bad'      => $discovery_bad,
             'discovery_review'   => $discovery_review,
             'discovery_issues'   => $discovery_issues,
@@ -2928,25 +2937,29 @@ final class BL_Markdown_For_Agents {
                 sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['encoding'] ) => self::settings_url( 'posts', 'encoding' ),
             ]
         );
+        $saved_live_checked  = isset( $live_health['checked'] ) ? (int) $live_health['checked'] : 0;
+        $saved_live_outdated = isset( $live_health['outdated_count'] ) ? (int) $live_health['outdated_count'] : 0;
+        $all_live_outdated   = $live_health && $saved_live_checked > 0 && $saved_live_outdated >= $saved_live_checked;
+
         self::render_dashboard_card(
             __( 'Live delivery', 'bloglogistics-markdown-for-agents' ),
             $live_issues,
-            ! $live_health ? 'na' : ( $live_problems ? 'problem' : ( $live_reviews ? 'review' : 'healthy' ) ),
+            ! $live_health || $all_live_outdated ? 'na' : ( $live_problems ? 'problem' : ( $live_reviews ? 'review' : 'healthy' ) ),
             [
                 sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['live'] ) => self::settings_url( 'pages', 'live' ),
                 sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['live'] ) => self::settings_url( 'posts', 'live' ),
             ],
-            ! $live_health ? __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' ) : ( ! empty( $live_health['outdated_count'] ) ? sprintf( _n( '%d saved result needs re-verification', '%d saved results need re-verification', (int) $live_health['outdated_count'], 'bloglogistics-markdown-for-agents' ), (int) $live_health['outdated_count'] ) : __( 'HTML, Markdown, and MIME delivery', 'bloglogistics-markdown-for-agents' ) )
+            ! $live_health ? __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' ) : ( $all_live_outdated ? __( 'Re-verification required', 'bloglogistics-markdown-for-agents' ) : ( ! empty( $live_health['outdated_count'] ) ? sprintf( _n( '%d saved result needs re-verification', '%d saved results need re-verification', (int) $live_health['outdated_count'], 'bloglogistics-markdown-for-agents' ), (int) $live_health['outdated_count'] ) : __( 'HTML, Markdown, and MIME delivery', 'bloglogistics-markdown-for-agents' ) ) )
         );
         self::render_dashboard_card(
             __( 'Discovery checks', 'bloglogistics-markdown-for-agents' ),
             $discovery_issues,
-            ! $live_health ? 'na' : ( $discovery_problems ? 'problem' : ( $discovery_reviews ? 'review' : 'healthy' ) ),
+            ! $live_health || $all_live_outdated ? 'na' : ( $discovery_problems ? 'problem' : ( $discovery_reviews ? 'review' : 'healthy' ) ),
             [
                 sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['discovery'] ) => self::settings_url( 'pages', 'discovery' ),
                 sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['discovery'] ) => self::settings_url( 'posts', 'discovery' ),
             ],
-            $live_health ? __( 'Checks discovery links in the live HTML head', 'bloglogistics-markdown-for-agents' ) : __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' )
+            ! $live_health ? __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' ) : ( $all_live_outdated ? __( 'Re-verification required', 'bloglogistics-markdown-for-agents' ) : __( 'Checks discovery links in the live HTML head', 'bloglogistics-markdown-for-agents' ) )
         );
         self::render_dashboard_card(
             __( 'Discovery disabled', 'bloglogistics-markdown-for-agents' ),
@@ -3197,8 +3210,16 @@ final class BL_Markdown_For_Agents {
                 $live_detail = self::live_delivery_detail( $live_item );
 
                 if ( ! empty( $state['live_outdated'] ) ) {
-                    $live_detail .= '; ' . __( 'Previous verification may be outdated; run live verification again', 'bloglogistics-markdown-for-agents' );
-                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $live_detail );
+                    echo self::status_markup( 'na', __( 'Not verified', 'bloglogistics-markdown-for-agents' ), __( 'Saved verification is from an earlier verifier or content state. Run live verification to refresh it.', 'bloglogistics-markdown-for-agents' ) );
+                } elseif ( ! empty( $state['live_inconclusive'] ) ) {
+                    $request_labels = [];
+                    foreach ( (array) $state['delivery_warnings'] as $warning ) {
+                        if ( in_array( (string) $warning, [ 'html_request_error', 'markdown_request_error' ], true ) ) {
+                            $request_labels[] = self::live_issue_label( (string) $warning );
+                        }
+                    }
+                    $request_detail = $request_labels ? implode( ' ', array_unique( $request_labels ) ) : __( 'The browser could not complete the public verification request.', 'bloglogistics-markdown-for-agents' );
+                    echo self::status_markup( 'na', __( 'Not verified', 'bloglogistics-markdown-for-agents' ), $request_detail );
                 } elseif ( ! empty( $state['live_bad'] ) ) {
                     $issue_labels = [];
                     foreach ( (array) $state['delivery_issues'] as $issue ) {
@@ -3210,7 +3231,7 @@ final class BL_Markdown_For_Agents {
                     echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), $live_detail );
                 } elseif ( ! empty( $state['live_review'] ) ) {
                     $warning_labels = [];
-                    foreach ( (array) $state['delivery_warnings'] as $warning ) {
+                    foreach ( (array) ( $state['severity_delivery_warnings'] ?? [] ) as $warning ) {
                         $warning_labels[] = 'markdown_mime' === (string) $warning
                             ? __( 'A usable, non-preferred Markdown MIME type was returned.', 'bloglogistics-markdown-for-agents' )
                             : self::live_issue_label( (string) $warning );
@@ -3239,8 +3260,7 @@ final class BL_Markdown_For_Agents {
                 $discovery_detail = self::discovery_detail( $live_item );
 
                 if ( ! empty( $state['live_outdated'] ) ) {
-                    $discovery_detail .= '; ' . __( 'Previous verification may be outdated; run live verification again', 'bloglogistics-markdown-for-agents' );
-                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $discovery_detail );
+                    echo self::status_markup( 'na', __( 'Not verified', 'bloglogistics-markdown-for-agents' ), __( 'Saved discovery verification is from an earlier verifier or content state. Run live verification to refresh it.', 'bloglogistics-markdown-for-agents' ) );
                 } elseif ( ! empty( $state['discovery_bad'] ) ) {
                     $issue_labels = [];
                     foreach ( (array) $state['discovery_issues'] as $issue ) {
@@ -3535,19 +3555,21 @@ final class BL_Markdown_For_Agents {
             printf( esc_html__( 'Items affected: %d.', 'bloglogistics-markdown-for-agents' ), $affected );
             echo '</p></div>';
         } elseif ( 'live_verified' === $message ) {
-            $checked   = isset( $_GET['checked'] ) ? absint( $_GET['checked'] ) : 0;
-            $passed    = isset( $_GET['passed'] ) ? absint( $_GET['passed'] ) : 0;
-            $reviewed  = isset( $_GET['reviewed'] ) ? absint( $_GET['reviewed'] ) : 0;
-            $failed    = isset( $_GET['failed'] ) ? absint( $_GET['failed'] ) : 0;
-            $truncated = ! empty( $_GET['truncated'] );
+            $checked      = isset( $_GET['checked'] ) ? absint( $_GET['checked'] ) : 0;
+            $passed       = isset( $_GET['passed'] ) ? absint( $_GET['passed'] ) : 0;
+            $reviewed     = isset( $_GET['reviewed'] ) ? absint( $_GET['reviewed'] ) : 0;
+            $failed       = isset( $_GET['failed'] ) ? absint( $_GET['failed'] ) : 0;
+            $inconclusive = isset( $_GET['inconclusive'] ) ? absint( $_GET['inconclusive'] ) : 0;
+            $truncated    = ! empty( $_GET['truncated'] );
             $notice_class = $failed ? 'notice-error' : ( $reviewed ? 'notice-warning' : 'notice-success' );
             echo '<div class="notice ' . esc_attr( $notice_class ) . ' is-dismissible"><p>';
             printf(
-                esc_html__( 'Live verification complete. Checked %1$d Markdown files: %2$d healthy, %3$d for review, and %4$d with problems.', 'bloglogistics-markdown-for-agents' ),
+                esc_html__( 'Live verification complete. Checked %1$d Markdown files: %2$d healthy, %3$d for review, %4$d with problems, and %5$d not verified.', 'bloglogistics-markdown-for-agents' ),
                 $checked,
                 $passed,
                 $reviewed,
-                $failed
+                $failed,
+                $inconclusive
             );
             if ( $truncated ) {
                 echo ' ' . esc_html__( 'The run reached the per-run verification limit.', 'bloglogistics-markdown-for-agents' );
@@ -3786,9 +3808,9 @@ final class BL_Markdown_For_Agents {
         $html_redirected = ! empty( $observation['html_redirected'] );
         $md_redirected   = ! empty( $observation['markdown_redirected'] );
 
-        if ( $html_redirected || $md_redirected ) {
-            $delivery_warnings[] = 'redirected';
-        }
+        // Successful redirects are recorded for detail, but are not health
+        // warnings by themselves. Canonical host, scheme, and trailing-slash
+        // redirects are common on otherwise healthy WordPress sites.
 
         $discovery_issues = [];
 
@@ -3811,7 +3833,7 @@ final class BL_Markdown_For_Agents {
         $discovery_warnings = array_values( array_unique( $discovery_warnings ) );
         $issues             = array_values( array_unique( array_merge( $delivery_issues, $discovery_issues ) ) );
         $warnings           = array_values( array_unique( array_merge( $delivery_warnings, $discovery_warnings ) ) );
-        $discovery_passed   = empty( $discovery_issues );
+        $discovery_passed   = empty( $discovery_issues ) && empty( $discovery_warnings );
 
         return [
             'post_id'                 => $post_id,
@@ -3905,6 +3927,7 @@ final class BL_Markdown_For_Agents {
         $passed        = 0;
         $reviewed      = 0;
         $failed        = 0;
+        $inconclusive  = 0;
         $mime_warnings = 0;
         $mime_failures = 0;
         $discovery_findings = 0;
@@ -3923,9 +3946,15 @@ final class BL_Markdown_For_Agents {
             $live_items[ $post_id ] = $item;
             $checked++;
 
+            $request_inconclusive = in_array( 'html_request_error', (array) $item['delivery_warnings'], true )
+                || in_array( 'markdown_request_error', (array) $item['delivery_warnings'], true );
+            $meaningful_delivery_warnings = array_values( array_diff( (array) $item['delivery_warnings'], [ 'html_request_error', 'markdown_request_error', 'redirected' ] ) );
+
             if ( ! empty( $item['issues'] ) ) {
                 $failed++;
-            } elseif ( ! empty( $item['warnings'] ) ) {
+            } elseif ( $request_inconclusive && empty( $meaningful_delivery_warnings ) && empty( $item['discovery_warnings'] ) ) {
+                $inconclusive++;
+            } elseif ( ! empty( $meaningful_delivery_warnings ) || ! empty( $item['discovery_warnings'] ) ) {
                 $reviewed++;
             } else {
                 $passed++;
@@ -3972,6 +4001,7 @@ final class BL_Markdown_For_Agents {
             'passed'             => $passed,
             'reviewed'           => $reviewed,
             'failed'             => $failed,
+            'inconclusive'       => $inconclusive,
             'mime_warnings'      => $mime_warnings,
             'mime_failures'      => $mime_failures,
             'discovery_failures' => $discovery_findings,
@@ -4009,6 +4039,7 @@ final class BL_Markdown_For_Agents {
                 'passed'                    => $passed,
                 'reviewed'                  => $reviewed,
                 'failed'                    => $failed,
+                'inconclusive'              => $inconclusive,
                 'truncated'                 => ! empty( $request['truncated'] ) ? 1 : 0,
             ],
             admin_url( 'admin.php' )
@@ -4021,6 +4052,7 @@ final class BL_Markdown_For_Agents {
                 'passed'      => $passed,
                 'reviewed'    => $reviewed,
                 'failed'      => $failed,
+                'inconclusive'=> $inconclusive,
             ]
         );
     }

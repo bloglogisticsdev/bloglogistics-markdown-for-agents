@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.4.3
+Stable tag: 2.4.4
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moves normal live endpoint verification into the administrator's web browser so the public URLs are checked from a real browser request path rather than by the WordPress origin server requesting itself. A successful fresh retry wins without creating a stale-cache warning. These checks do not run on normal public page loads and do not modify Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the administrator's web browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. These checks do not run on normal public page loads and do not modify Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -148,6 +148,14 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.4.4 =
+* Fix false site-wide yellow Review states after verifier upgrades.
+* Show saved verification that needs rechecking as light-grey Not verified rather than Review.
+* Treat browser/network request exceptions as inconclusive Not verified results rather than health warnings.
+* Record successful redirects without making Live Delivery yellow.
+* Keep outdated/unverified results out of health-attention counts.
+* Distinguish not-verified results in the live verification completion notice.
 
 = 2.4.3 =
 * Move normal Live Endpoint Verification from WordPress origin-server self-requests to the administrator's browser.
