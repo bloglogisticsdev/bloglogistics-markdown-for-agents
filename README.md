@@ -16,9 +16,10 @@ Users create those files themselves. The plugin discovers them during an adminis
 4. Click **Scan Changes and Refresh Health**. The incremental scan checks file existence, timestamps, and sizes, while reusing previous encoding validation for unchanged files.
 5. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 6. Use **Run Live Endpoint Verification** to check public HTTP status, redirects, Markdown MIME type, and discovery markup.
-7. Review detected companions and use individual or bulk controls to enable or disable discovery, force selected revalidation, or live-verify selected items.
-8. Review server compatibility, Markdown MIME delivery, and `.htaccess` backup status when the site uses Apache-compatible rules.
-9. Purge page/CDN caches after changes that affect discovery markup or public file delivery.
+7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, manage discovery, and verify selected content.
+8. Use the **llms.txt** tab for focused validation and local Markdown-reference health.
+9. Use **Server & .htaccess** for server compatibility, Markdown MIME delivery, rule repair, and backup management.
+10. Purge page/CDN caches after changes that affect discovery markup or public file delivery.
 
 ## Markdown Health Dashboard
 
@@ -37,6 +38,20 @@ The administrator-only health snapshot reports:
 - live discovery-link verification.
 
 The stale-file indicator is deliberately labelled **possibly stale**. It compares timestamps rather than semantic content, and deployment tools can change filesystem timestamps.
+
+## Administrator interface
+
+Version 2.4.0 reorganizes the plugin into five WordPress-style tabs:
+
+- **Overview** provides linked Markdown Health Dashboard cards and the main scan/live-verification actions.
+- **Pages** shows only WordPress pages in one consolidated health and discovery table.
+- **Posts** shows only WordPress posts in the same focused interface.
+- **llms.txt** provides dedicated validation, warnings, and stored same-site Markdown-reference results.
+- **Server & .htaccess** contains technical server diagnostics, rule management, live server-rule checks, and backup cleanup.
+
+Pages and Posts can be filtered by **Needs attention**, **Missing**, **Stale**, **Encoding**, **Live issues**, or **Disabled**. Row actions provide direct Edit, View Page/View Post, View Markdown, and Verify shortcuts when available. The plugin preserves the active tab and filter after administrator actions.
+
+Status presentation is consistent across the interface: **Healthy** is green, **Problem** is red, **Review** is yellow, and **Not applicable** is light grey. Text labels accompany colour so status is not communicated by colour alone.
 
 ## Incremental scanning
 
@@ -76,14 +91,14 @@ Live verification is separate from the local scan because it makes public same-s
 
 ## Bulk management
 
-The detected companion table includes bulk actions for selected posts/pages:
+The separate Pages and Posts tables include bulk actions for selected content:
 
 - enable discovery;
 - disable discovery;
 - force revalidation of selected companions;
 - live-verify selected companions.
 
-The original individual **Do not advertise Markdown or llms.txt from this page** setting remains available in both the central admin screen and the WordPress editor.
+The individual discovery setting remains available in the WordPress editor, while the Pages and Posts tabs provide per-row controls and bulk actions.
 
 ## Server compatibility diagnostics
 

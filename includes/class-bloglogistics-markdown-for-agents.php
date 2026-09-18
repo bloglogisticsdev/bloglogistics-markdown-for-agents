@@ -36,6 +36,7 @@ final class BL_Markdown_For_Agents {
         add_action( 'admin_post_bloglogistics_mfa_save_exclusions', [ __CLASS__, 'handle_save_exclusions' ] );
         add_action( 'admin_post_bloglogistics_mfa_htaccess', [ __CLASS__, 'handle_htaccess' ] );
         add_action( 'admin_post_bloglogistics_mfa_live_verify', [ __CLASS__, 'handle_live_verify' ] );
+        add_action( 'admin_post_bloglogistics_mfa_verify_item', [ __CLASS__, 'handle_verify_item' ] );
         add_action( 'admin_post_bloglogistics_mfa_cleanup_backups', [ __CLASS__, 'handle_cleanup_backups' ] );
         add_action( 'admin_notices', [ __CLASS__, 'render_htaccess_admin_notice' ] );
 
@@ -428,6 +429,7 @@ final class BL_Markdown_For_Agents {
             'local_links_checked'  => 0,
             'broken_local_links'   => [],
             'duplicate_links'      => [],
+            'local_links'          => [],
             'errors'               => [],
             'warnings'             => [],
         ];
@@ -494,7 +496,9 @@ final class BL_Markdown_For_Agents {
                 continue;
             }
 
-            if ( isset( $seen[ $link ] ) ) {
+            $first_seen = ! isset( $seen[ $link ] );
+
+            if ( ! $first_seen ) {
                 if ( ! in_array( $link, $result['duplicate_links'], true ) ) {
                     $result['duplicate_links'][] = $link;
                 }
@@ -518,7 +522,16 @@ final class BL_Markdown_For_Agents {
             $result['local_links_checked']++;
             $target = self::local_file_from_url( $link, $public_root );
 
-            if ( null === $target || ! self::is_safe_readable_file( $target, $public_root ) ) {
+            $target_exists = null !== $target && self::is_safe_readable_file( $target, $public_root );
+
+            if ( $first_seen ) {
+                $result['local_links'][] = [
+                    'url'    => $link,
+                    'exists' => $target_exists,
+                ];
+            }
+
+            if ( ! $target_exists ) {
                 $result['broken_local_links'][] = $link;
                 $result['errors'][] = [ 'code' => 'broken_local_markdown', 'value' => $link ];
             }
@@ -2068,60 +2081,904 @@ final class BL_Markdown_For_Agents {
         );
     }
 
+    private static function settings_tab(): string {
+        $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'overview';
+
+        return in_array( $tab, [ 'overview', 'pages', 'posts', 'llms', 'server' ], true ) ? $tab : 'overview';
+    }
+
+    private static function settings_view(): string {
+        $view = isset( $_GET['view'] ) ? sanitize_key( wp_unslash( $_GET['view'] ) ) : 'all';
+
+        return in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'disabled' ], true ) ? $view : 'all';
+    }
+
+    private static function settings_url( string $tab = 'overview', string $view = 'all', array $extra = [] ): string {
+        $args = array_merge(
+            [
+                'page' => self::SETTINGS_SLUG,
+                'tab'  => $tab,
+            ],
+            $extra
+        );
+
+        if ( in_array( $tab, [ 'pages', 'posts' ], true ) ) {
+            $args['view'] = $view;
+        }
+
+        return add_query_arg( $args, admin_url( 'admin.php' ) );
+    }
+
+    /**
+     * Preserve the administrator's current tab/filter after an action.
+     *
+     * @return array{tab:string,view:string}
+     */
+    private static function return_context( string $default_tab = 'overview', string $default_view = 'all' ): array {
+        $tab_source  = isset( $_POST['return_tab'] ) ? wp_unslash( $_POST['return_tab'] ) : ( isset( $_GET['return_tab'] ) ? wp_unslash( $_GET['return_tab'] ) : $default_tab );
+        $view_source = isset( $_POST['return_view'] ) ? wp_unslash( $_POST['return_view'] ) : ( isset( $_GET['return_view'] ) ? wp_unslash( $_GET['return_view'] ) : $default_view );
+        $tab         = sanitize_key( (string) $tab_source );
+        $view        = sanitize_key( (string) $view_source );
+
+        if ( ! in_array( $tab, [ 'overview', 'pages', 'posts', 'llms', 'server' ], true ) ) {
+            $tab = $default_tab;
+        }
+
+        if ( ! in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'disabled' ], true ) ) {
+            $view = $default_view;
+        }
+
+        return [
+            'tab'  => $tab,
+            'view' => $view,
+        ];
+    }
+
+    /**
+     * Return published IDs for one supported post type, sorted by title.
+     *
+     * @return array<int,int>
+     */
+    private static function published_ids_by_type( string $post_type ): array {
+        static $cache = [];
+
+        if ( isset( $cache[ $post_type ] ) ) {
+            return $cache[ $post_type ];
+        }
+
+        $ids = get_posts(
+            [
+                'post_type'              => $post_type,
+                'post_status'            => 'publish',
+                'numberposts'            => -1,
+                'fields'                 => 'ids',
+                'orderby'                => 'title',
+                'order'                  => 'ASC',
+                'no_found_rows'          => true,
+                'suppress_filters'       => false,
+                'update_post_meta_cache' => true,
+                'update_post_term_cache' => false,
+            ]
+        );
+
+        $cache[ $post_type ] = array_map( 'absint', $ids );
+
+        return $cache[ $post_type ];
+    }
+
+    /**
+     * Summarise one content item's saved health state for display/filtering.
+     * No filesystem or HTTP work is performed here.
+     *
+     * @param array<string,mixed> $item       Saved scan item.
+     * @param array<string,mixed> $live_item  Saved live verification item.
+     * @return array<string,mixed>
+     */
+    private static function content_item_state( int $post_id, array $item, array $live_item ): array {
+        $scanned  = ! empty( $item );
+        $exists   = $scanned && ! empty( $item['exists'] );
+        $disabled = self::is_discovery_disabled( $post_id );
+        $stale    = $exists && ! empty( $item['stale'] );
+        $encoding = isset( $item['encoding'] ) && is_array( $item['encoding'] ) ? $item['encoding'] : [];
+        $enc_bad  = $exists && ! empty( $encoding ) && empty( $encoding['valid'] );
+        $enc_bom  = $exists && ! $enc_bad && ! empty( $encoding['bom'] );
+        $live     = ! empty( $live_item );
+        $live_bad = $live && empty( $live_item['passed'] );
+        $warnings = $live && isset( $live_item['warnings'] ) && is_array( $live_item['warnings'] ) ? $live_item['warnings'] : [];
+        $live_review = $live && ! $live_bad && ! empty( $warnings );
+        $missing     = $scanned && ! $exists && ! $disabled;
+        $attention   = $missing || $stale || $enc_bad || $enc_bom || $live_bad || $live_review;
+
+        return [
+            'scanned'       => $scanned,
+            'exists'        => $exists,
+            'disabled'      => $disabled,
+            'missing'       => $missing,
+            'stale'         => $stale,
+            'encoding'      => $encoding,
+            'encoding_bad'  => $enc_bad,
+            'encoding_bom'  => $enc_bom,
+            'live'          => $live,
+            'live_bad'      => $live_bad,
+            'live_review'   => $live_review,
+            'attention'     => $attention,
+            'item'          => $item,
+            'live_item'     => $live_item,
+            'markdown_url'  => $exists && ! empty( $item['markdown_url'] ) ? (string) $item['markdown_url'] : (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true ),
+        ];
+    }
+
+    /**
+     * Does a content state belong in the requested Pages/Posts filter?
+     *
+     * @param array<string,mixed> $state Content state.
+     */
+    private static function state_matches_view( array $state, string $view ): bool {
+        return match ( $view ) {
+            'attention' => ! empty( $state['attention'] ),
+            'missing'   => ! empty( $state['missing'] ),
+            'stale'     => ! empty( $state['stale'] ),
+            'encoding'  => ! empty( $state['encoding_bad'] ) || ! empty( $state['encoding_bom'] ),
+            'live'      => ! empty( $state['live_bad'] ) || ! empty( $state['live_review'] ),
+            'disabled'  => ! empty( $state['disabled'] ),
+            default     => true,
+        };
+    }
+
+    /**
+     * Count each filter state for a Pages/Posts tab.
+     *
+     * @param array<int,int>       $ids        Published IDs.
+     * @param array<string,mixed>  $health     Saved health snapshot.
+     * @param array<int,mixed>     $live_items Saved live verification items.
+     * @return array<string,int>
+     */
+    private static function content_filter_counts( array $ids, array $health, array $live_items ): array {
+        $counts = [
+            'all'       => count( $ids ),
+            'attention' => 0,
+            'problems'  => 0,
+            'reviews'   => 0,
+            'missing'   => 0,
+            'stale'     => 0,
+            'encoding'  => 0,
+            'live'      => 0,
+            'disabled'  => 0,
+            'found'     => 0,
+        ];
+        $items = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
+
+        foreach ( $ids as $post_id ) {
+            $item       = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
+            $live_item  = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
+            $state      = self::content_item_state( (int) $post_id, $item, $live_item );
+
+            foreach ( [ 'attention', 'missing', 'stale', 'disabled' ] as $key ) {
+                if ( ! empty( $state[ $key ] ) ) {
+                    $counts[ $key ]++;
+                }
+            }
+
+            if ( ! empty( $state['encoding_bad'] ) || ! empty( $state['encoding_bom'] ) ) {
+                $counts['encoding']++;
+            }
+
+            if ( ! empty( $state['live_bad'] ) || ! empty( $state['live_review'] ) ) {
+                $counts['live']++;
+            }
+
+            $has_problem = ! empty( $state['missing'] ) || ! empty( $state['encoding_bad'] ) || ! empty( $state['live_bad'] );
+            $has_review  = ! empty( $state['stale'] ) || ! empty( $state['encoding_bom'] ) || ! empty( $state['live_review'] );
+
+            if ( $has_problem ) {
+                $counts['problems']++;
+            } elseif ( $has_review ) {
+                $counts['reviews']++;
+            }
+
+            if ( ! empty( $state['exists'] ) ) {
+                $counts['found']++;
+            }
+        }
+
+        return $counts;
+    }
+
+    private static function status_markup( string $status, string $label, string $detail = '' ): string {
+        $status = in_array( $status, [ 'healthy', 'problem', 'review', 'na' ], true ) ? $status : 'na';
+        $html   = '<span class="bl-mfa-status bl-mfa-status-' . esc_attr( $status ) . '">' . esc_html( $label ) . '</span>';
+
+        if ( '' !== $detail ) {
+            $html .= '<span class="bl-mfa-health-detail">' . esc_html( $detail ) . '</span>';
+        }
+
+        return $html;
+    }
+
+    /**
+     * Render one dashboard card. One-link cards are clickable as a whole;
+     * multi-destination cards expose explicit Pages/Posts links.
+     *
+     * @param array<string,string> $links Link label => URL.
+     */
+    private static function render_dashboard_card( string $title, int|string $value, string $status, array $links = [], string $detail = '' ): void {
+        $status = in_array( $status, [ 'healthy', 'problem', 'review', 'na' ], true ) ? $status : 'na';
+        $inner  = '<span class="bl-mfa-card-label">' . esc_html( $title ) . '</span>';
+        $display_value = is_int( $value ) ? number_format_i18n( $value ) : $value;
+        $inner .= '<strong>' . esc_html( $display_value ) . '</strong>';
+
+        if ( '' !== $detail ) {
+            $inner .= '<span class="bl-mfa-card-detail">' . esc_html( $detail ) . '</span>';
+        }
+
+        if ( 1 === count( $links ) ) {
+            $url = reset( $links );
+            echo '<a class="bl-mfa-health-card bl-mfa-card-' . esc_attr( $status ) . '" href="' . esc_url( (string) $url ) . '">' . $inner . '</a>';
+            return;
+        }
+
+        echo '<div class="bl-mfa-health-card bl-mfa-card-' . esc_attr( $status ) . '">' . $inner;
+        if ( $links ) {
+            echo '<span class="bl-mfa-card-links">';
+            $parts = [];
+            foreach ( $links as $label => $url ) {
+                $parts[] = '<a href="' . esc_url( $url ) . '">' . esc_html( $label ) . '</a>';
+            }
+            echo implode( '<span aria-hidden="true"> · </span>', $parts );
+            echo '</span>';
+        }
+        echo '</div>';
+    }
+
+    private static function render_settings_tabs( string $active_tab, int $page_count, int $post_count ): void {
+        $tabs = [
+            'overview' => __( 'Overview', 'bloglogistics-markdown-for-agents' ),
+            'pages'    => sprintf( __( 'Pages (%d)', 'bloglogistics-markdown-for-agents' ), $page_count ),
+            'posts'    => sprintf( __( 'Posts (%d)', 'bloglogistics-markdown-for-agents' ), $post_count ),
+            'llms'     => __( 'llms.txt', 'bloglogistics-markdown-for-agents' ),
+            'server'   => __( 'Server & .htaccess', 'bloglogistics-markdown-for-agents' ),
+        ];
+
+        echo '<nav class="nav-tab-wrapper bl-mfa-tabs" aria-label="' . esc_attr__( 'Markdown for Agents sections', 'bloglogistics-markdown-for-agents' ) . '">';
+        foreach ( $tabs as $tab => $label ) {
+            $class = 'nav-tab' . ( $active_tab === $tab ? ' nav-tab-active' : '' );
+            echo '<a class="' . esc_attr( $class ) . '" href="' . esc_url( self::settings_url( $tab ) ) . '">' . esc_html( $label ) . '</a>';
+        }
+        echo '</nav>';
+    }
+
+    private static function render_scan_actions( string $tab, string $view ): void {
+        echo '<div class="bl-mfa-actions bl-mfa-primary-actions">';
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+        wp_nonce_field( 'bloglogistics_mfa_scan' );
+        echo '<input type="hidden" name="action" value="bloglogistics_mfa_scan">';
+        echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
+        echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        submit_button( __( 'Scan Changes and Refresh Health', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
+        echo ' <button type="submit" class="button" name="force_full_scan" value="1">' . esc_html__( 'Force Full Rescan', 'bloglogistics-markdown-for-agents' ) . '</button>';
+        echo '</form>';
+
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+        wp_nonce_field( 'bloglogistics_mfa_live_verify' );
+        echo '<input type="hidden" name="action" value="bloglogistics_mfa_live_verify">';
+        echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
+        echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        submit_button( __( 'Run Live Endpoint Verification', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
+        echo '</form>';
+        echo '</div>';
+    }
+
+    /**
+     * Render the Overview tab.
+     *
+     * @param array<string,mixed> $health         Saved health snapshot.
+     * @param array<string,mixed> $htaccess_status Saved .htaccess state.
+     * @param array<string,mixed> $server         Server diagnostics.
+     */
+    private static function render_overview_tab( array $health, array $htaccess_status, array $server, int $last_scan ): void {
+        $health_ready = ! empty( $health['scanned_at'] ) && isset( $health['items'] ) && is_array( $health['items'] );
+        $live_health  = isset( $health['live'] ) && is_array( $health['live'] ) ? $health['live'] : [];
+        $live_items   = isset( $live_health['items'] ) && is_array( $live_health['items'] ) ? $live_health['items'] : [];
+        $llms_health  = isset( $health['llms'] ) && is_array( $health['llms'] ) ? $health['llms'] : [];
+        $page_ids     = self::published_ids_by_type( 'page' );
+        $post_ids     = self::published_ids_by_type( 'post' );
+        $page_counts  = self::content_filter_counts( $page_ids, $health, $live_items );
+        $post_counts  = self::content_filter_counts( $post_ids, $health, $live_items );
+        $missing      = $page_counts['missing'] + $post_counts['missing'];
+        $stale        = $page_counts['stale'] + $post_counts['stale'];
+        $encoding     = $page_counts['encoding'] + $post_counts['encoding'];
+        $live_issues  = $page_counts['live'] + $post_counts['live'];
+        $disabled     = $page_counts['disabled'] + $post_counts['disabled'];
+        $found        = $page_counts['found'] + $post_counts['found'];
+        $encoding_bad = isset( $health['encoding_issues'] ) ? (int) $health['encoding_issues'] : 0;
+        $encoding_warn = isset( $health['encoding_warnings'] ) ? (int) $health['encoding_warnings'] : 0;
+
+        echo '<h2>' . esc_html__( 'Markdown Health Dashboard', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        echo '<div class="bl-mfa-status-key"><strong>' . esc_html__( 'Status key:', 'bloglogistics-markdown-for-agents' ) . '</strong> ';
+        echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ) ) . ' ';
+        echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ) ) . ' ';
+        echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ) ) . ' ';
+        echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ) );
+        echo '</div>';
+
+        if ( ! $health_ready ) {
+            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'Run the Markdown scan to populate health information. The scan checks companion presence, freshness, UTF-8 encoding, common mojibake patterns, and llms.txt references without changing your Markdown content.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+        }
+
+        echo '<div class="bl-mfa-health-grid">';
+        self::render_dashboard_card(
+            __( 'Pages', 'bloglogistics-markdown-for-agents' ),
+            count( $page_ids ),
+            ! $health_ready ? 'na' : ( $page_counts['problems'] ? 'problem' : ( $page_counts['reviews'] ? 'review' : 'healthy' ) ),
+            [ __( 'Open Pages', 'bloglogistics-markdown-for-agents' ) => self::settings_url( 'pages', $page_counts['attention'] ? 'attention' : 'all' ) ],
+            ! $health_ready ? __( 'Not scanned yet', 'bloglogistics-markdown-for-agents' ) : ( $page_counts['attention'] ? sprintf( _n( '%d needs attention', '%d need attention', $page_counts['attention'], 'bloglogistics-markdown-for-agents' ), $page_counts['attention'] ) : __( 'No saved issues', 'bloglogistics-markdown-for-agents' ) )
+        );
+        self::render_dashboard_card(
+            __( 'Posts', 'bloglogistics-markdown-for-agents' ),
+            count( $post_ids ),
+            ! $health_ready ? 'na' : ( $post_counts['problems'] ? 'problem' : ( $post_counts['reviews'] ? 'review' : 'healthy' ) ),
+            [ __( 'Open Posts', 'bloglogistics-markdown-for-agents' ) => self::settings_url( 'posts', $post_counts['attention'] ? 'attention' : 'all' ) ],
+            ! $health_ready ? __( 'Not scanned yet', 'bloglogistics-markdown-for-agents' ) : ( $post_counts['attention'] ? sprintf( _n( '%d needs attention', '%d need attention', $post_counts['attention'], 'bloglogistics-markdown-for-agents' ), $post_counts['attention'] ) : __( 'No saved issues', 'bloglogistics-markdown-for-agents' ) )
+        );
+        self::render_dashboard_card(
+            __( 'Companions found', 'bloglogistics-markdown-for-agents' ),
+            $found,
+            $health_ready ? 'healthy' : 'na',
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['found'] ) => self::settings_url( 'pages', 'all' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['found'] ) => self::settings_url( 'posts', 'all' ),
+            ]
+        );
+        self::render_dashboard_card(
+            __( 'Missing companions', 'bloglogistics-markdown-for-agents' ),
+            $missing,
+            ! $health_ready ? 'na' : ( $missing ? 'problem' : 'healthy' ),
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['missing'] ) => self::settings_url( 'pages', 'missing' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['missing'] ) => self::settings_url( 'posts', 'missing' ),
+            ]
+        );
+        self::render_dashboard_card(
+            __( 'Possibly stale', 'bloglogistics-markdown-for-agents' ),
+            $stale,
+            ! $health_ready ? 'na' : ( $stale ? 'review' : 'healthy' ),
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['stale'] ) => self::settings_url( 'pages', 'stale' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['stale'] ) => self::settings_url( 'posts', 'stale' ),
+            ]
+        );
+        self::render_dashboard_card(
+            __( 'Encoding findings', 'bloglogistics-markdown-for-agents' ),
+            $encoding,
+            ! $health_ready ? 'na' : ( $encoding_bad ? 'problem' : ( $encoding_warn ? 'review' : 'healthy' ) ),
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['encoding'] ) => self::settings_url( 'pages', 'encoding' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['encoding'] ) => self::settings_url( 'posts', 'encoding' ),
+            ]
+        );
+        self::render_dashboard_card(
+            __( 'Live issues', 'bloglogistics-markdown-for-agents' ),
+            $live_issues,
+            ! $live_health ? 'na' : ( ! empty( $live_health['failed'] ) ? 'problem' : ( $live_issues ? 'review' : 'healthy' ) ),
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['live'] ) => self::settings_url( 'pages', 'live' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['live'] ) => self::settings_url( 'posts', 'live' ),
+            ],
+            $live_health ? __( 'Based on the latest saved live checks', 'bloglogistics-markdown-for-agents' ) : __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' )
+        );
+        self::render_dashboard_card(
+            __( 'Discovery disabled', 'bloglogistics-markdown-for-agents' ),
+            $disabled,
+            'na',
+            [
+                sprintf( __( 'Pages %d', 'bloglogistics-markdown-for-agents' ), $page_counts['disabled'] ) => self::settings_url( 'pages', 'disabled' ),
+                sprintf( __( 'Posts %d', 'bloglogistics-markdown-for-agents' ), $post_counts['disabled'] ) => self::settings_url( 'posts', 'disabled' ),
+            ],
+            __( 'Intentional exclusions are not errors', 'bloglogistics-markdown-for-agents' )
+        );
+
+        $llms_status = 'na';
+        $llms_detail = __( 'Not scanned yet', 'bloglogistics-markdown-for-agents' );
+        if ( $health_ready ) {
+            $llms_errors   = isset( $llms_health['errors'] ) && is_array( $llms_health['errors'] ) ? $llms_health['errors'] : [];
+            $llms_warnings = isset( $llms_health['warnings'] ) && is_array( $llms_health['warnings'] ) ? $llms_health['warnings'] : [];
+            $llms_status   = ! empty( $llms_health['valid'] ) ? ( $llms_warnings ? 'review' : 'healthy' ) : 'problem';
+            $llms_detail   = ! empty( $llms_health['valid'] ) ? ( $llms_warnings ? __( 'Valid with warnings', 'bloglogistics-markdown-for-agents' ) : __( 'Healthy', 'bloglogistics-markdown-for-agents' ) ) : sprintf( _n( '%d problem', '%d problems', count( $llms_errors ), 'bloglogistics-markdown-for-agents' ), count( $llms_errors ) );
+        }
+        self::render_dashboard_card(
+            __( 'llms.txt', 'bloglogistics-markdown-for-agents' ),
+            isset( $llms_health['local_links_checked'] ) ? (int) $llms_health['local_links_checked'] : 0,
+            $llms_status,
+            [ __( 'Open llms.txt', 'bloglogistics-markdown-for-agents' ) => self::settings_url( 'llms' ) ],
+            $llms_detail
+        );
+
+        $rewrite_ok = ! empty( $htaccess_status['rewrite_rule_verified'] );
+        $mime_ok    = ! empty( $htaccess_status['mime_rule_verified'] );
+        $server_status = ! empty( $server['supports_htaccess'] ) ? ( $rewrite_ok && $mime_ok ? 'healthy' : 'review' ) : 'na';
+        self::render_dashboard_card(
+            __( 'Server rules', 'bloglogistics-markdown-for-agents' ),
+            ( (int) $rewrite_ok + (int) $mime_ok ) . '/2',
+            $server_status,
+            [ __( 'Open server tools', 'bloglogistics-markdown-for-agents' ) => self::settings_url( 'server' ) ],
+            ! empty( $server['supports_htaccess'] ) ? __( '2 managed rule groups expected', 'bloglogistics-markdown-for-agents' ) : __( 'Server-level configuration may be required', 'bloglogistics-markdown-for-agents' )
+        );
+        echo '</div>';
+
+        echo '<div class="bl-mfa-overview-meta">';
+        echo '<span><strong>' . esc_html__( 'Last scan:', 'bloglogistics-markdown-for-agents' ) . '</strong> ' . ( $last_scan ? esc_html( wp_date( 'Y-m-d H:i:s T', $last_scan ) ) : esc_html__( 'Not yet scanned', 'bloglogistics-markdown-for-agents' ) ) . '</span>';
+        echo '<span><strong>' . esc_html__( 'Last live verification:', 'bloglogistics-markdown-for-agents' ) . '</strong> ' . ( ! empty( $live_health['verified_at'] ) ? esc_html( wp_date( 'Y-m-d H:i:s T', (int) $live_health['verified_at'] ) ) : esc_html__( 'Not yet run', 'bloglogistics-markdown-for-agents' ) ) . '</span>';
+        echo '</div>';
+
+        self::render_scan_actions( 'overview', 'all' );
+        echo '<p class="description">' . esc_html__( 'The incremental scan performs local administrator-only checks. Live verification is separate because it makes same-site HTTP requests. Neither operation runs during normal public page loads.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<h2 style="margin-top:2em;">' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        echo '<ol class="bl-mfa-how-it-works">';
+        echo '<li>' . esc_html__( 'Create and maintain your curated /llms.txt and Markdown companion files.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'For a normal page such as /about-us/, place the companion at /about-us/index.md. The homepage companion is /index.md.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'Run the incremental scan after files or WordPress content change. Use Force Full Rescan when every companion should be re-read.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'Use the Pages and Posts tabs to review health, filter problems, change discovery settings, or verify selected content.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '<li>' . esc_html__( 'Use the llms.txt and Server & .htaccess tabs for focused validation and technical diagnostics.', 'bloglogistics-markdown-for-agents' ) . '</li>';
+        echo '</ol>';
+    }
+
+    /**
+     * Render either the Pages or Posts management tab.
+     *
+     * @param array<string,mixed> $health      Saved health snapshot.
+     * @param array<int,mixed>    $live_items  Saved live results.
+     */
+    private static function render_content_tab( string $post_type, string $tab, string $view, array $health, array $live_items ): void {
+        $ids    = self::published_ids_by_type( $post_type );
+        $items  = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
+        $counts = self::content_filter_counts( $ids, $health, $live_items );
+        $labels = [
+            'all'       => __( 'All', 'bloglogistics-markdown-for-agents' ),
+            'attention' => __( 'Needs attention', 'bloglogistics-markdown-for-agents' ),
+            'missing'   => __( 'Missing', 'bloglogistics-markdown-for-agents' ),
+            'stale'     => __( 'Stale', 'bloglogistics-markdown-for-agents' ),
+            'encoding'  => __( 'Encoding', 'bloglogistics-markdown-for-agents' ),
+            'live'      => __( 'Live issues', 'bloglogistics-markdown-for-agents' ),
+            'disabled'  => __( 'Disabled', 'bloglogistics-markdown-for-agents' ),
+        ];
+        $visible_ids = [];
+
+        foreach ( $ids as $post_id ) {
+            $item      = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
+            $live_item = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
+            $state     = self::content_item_state( (int) $post_id, $item, $live_item );
+            if ( self::state_matches_view( $state, $view ) ) {
+                $visible_ids[] = (int) $post_id;
+            }
+        }
+
+        echo '<h2>' . esc_html( 'page' === $post_type ? __( 'Pages', 'bloglogistics-markdown-for-agents' ) : __( 'Posts', 'bloglogistics-markdown-for-agents' ) ) . '</h2>';
+        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. The table combines companion detection, freshness, encoding, live verification, and discovery state in one place.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<ul class="subsubsub bl-mfa-filters">';
+        $parts = [];
+        foreach ( $labels as $key => $label ) {
+            $class   = $view === $key ? ' class="current" aria-current="page"' : '';
+            $parts[] = '<li><a' . $class . ' href="' . esc_url( self::settings_url( $tab, $key ) ) . '">' . esc_html( $label ) . ' <span class="count">(' . esc_html( number_format_i18n( $counts[ $key ] ) ) . ')</span></a></li>';
+        }
+        echo implode( ' | ', $parts );
+        echo '</ul><div class="clear"></div>';
+
+        self::render_scan_actions( $tab, $view );
+
+        if ( ! $ids ) {
+            echo '<p>' . esc_html__( 'No published content exists in this section.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+            return;
+        }
+
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+        wp_nonce_field( 'bloglogistics_mfa_save_exclusions' );
+        echo '<input type="hidden" name="action" value="bloglogistics_mfa_save_exclusions">';
+        echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
+        echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+
+        foreach ( $ids as $post_id ) {
+            echo '<input type="hidden" name="managed_ids[]" value="' . esc_attr( (string) $post_id ) . '">';
+            if ( ! in_array( $post_id, $visible_ids, true ) && self::is_discovery_disabled( (int) $post_id ) ) {
+                echo '<input type="hidden" name="disabled_ids[]" value="' . esc_attr( (string) $post_id ) . '">';
+            }
+        }
+
+        echo '<div class="bl-mfa-actions"><select name="bulk_action">';
+        echo '<option value="">' . esc_html__( 'Bulk actions', 'bloglogistics-markdown-for-agents' ) . '</option>';
+        echo '<option value="enable">' . esc_html__( 'Enable discovery', 'bloglogistics-markdown-for-agents' ) . '</option>';
+        echo '<option value="disable">' . esc_html__( 'Disable discovery', 'bloglogistics-markdown-for-agents' ) . '</option>';
+        echo '<option value="rescan">' . esc_html__( 'Force revalidate selected', 'bloglogistics-markdown-for-agents' ) . '</option>';
+        echo '<option value="verify">' . esc_html__( 'Live verify selected', 'bloglogistics-markdown-for-agents' ) . '</option>';
+        echo '</select><button type="submit" class="button" name="apply_bulk" value="1">' . esc_html__( 'Apply', 'bloglogistics-markdown-for-agents' ) . '</button></div>';
+
+        if ( ! $visible_ids ) {
+            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'No items match this filter.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            echo '</form>';
+            return;
+        }
+
+        echo '<div class="bl-mfa-table-wrap"><table class="widefat striped bl-mfa-health-table"><thead><tr>';
+        echo '<td class="check-column"><input type="checkbox" class="bl-mfa-select-all" aria-label="' . esc_attr__( 'Select all visible items', 'bloglogistics-markdown-for-agents' ) . '"></td>';
+        echo '<th>' . esc_html__( 'Title', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Companion', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Freshness', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Encoding', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Live Status', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '<th>' . esc_html__( 'Discovery', 'bloglogistics-markdown-for-agents' ) . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ( $visible_ids as $post_id ) {
+            $item      = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
+            $live_item = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
+            $state     = self::content_item_state( $post_id, $item, $live_item );
+            $title     = get_the_title( $post_id );
+            $edit_link = get_edit_post_link( $post_id );
+            $view_link = get_permalink( $post_id );
+            $md_url    = (string) $state['markdown_url'];
+            $verify_url = wp_nonce_url(
+                add_query_arg(
+                    [
+                        'action'      => 'bloglogistics_mfa_verify_item',
+                        'post_id'     => $post_id,
+                        'return_tab'  => $tab,
+                        'return_view' => $view,
+                    ],
+                    admin_url( 'admin-post.php' )
+                ),
+                'bloglogistics_mfa_verify_item_' . $post_id
+            );
+
+            echo '<tr><th scope="row" class="check-column"><input class="bl-mfa-row-select" type="checkbox" name="selected_ids[]" value="' . esc_attr( (string) $post_id ) . '" aria-label="' . esc_attr( sprintf( __( 'Select %s', 'bloglogistics-markdown-for-agents' ), $title ) ) . '"></th><td class="column-title"><strong>';
+            if ( $edit_link ) {
+                echo '<a href="' . esc_url( $edit_link ) . '">' . esc_html( $title ) . '</a>';
+            } else {
+                echo esc_html( $title );
+            }
+            echo '</strong>';
+            if ( ! empty( $item['markdown_relative'] ) ) {
+                echo '<span class="bl-mfa-health-detail"><code>/' . esc_html( ltrim( (string) $item['markdown_relative'], '/' ) ) . '</code></span>';
+            }
+            echo '<div class="row-actions">';
+            $row_actions = [];
+            if ( $edit_link ) {
+                $row_actions[] = '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit', 'bloglogistics-markdown-for-agents' ) . '</a>';
+            }
+            if ( is_string( $view_link ) && '' !== $view_link ) {
+                $view_label    = 'page' === $post_type ? __( 'View Page', 'bloglogistics-markdown-for-agents' ) : __( 'View Post', 'bloglogistics-markdown-for-agents' );
+                $row_actions[] = '<a href="' . esc_url( $view_link ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $view_label ) . '</a>';
+            }
+            if ( ! empty( $state['exists'] ) && '' !== $md_url ) {
+                $row_actions[] = '<a href="' . esc_url( $md_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'View Markdown', 'bloglogistics-markdown-for-agents' ) . '</a>';
+                $row_actions[] = '<a href="' . esc_url( $verify_url ) . '">' . esc_html__( 'Verify', 'bloglogistics-markdown-for-agents' ) . '</a>';
+            }
+            echo implode( ' | ', $row_actions );
+            echo '</div></td>';
+
+            echo '<td>';
+            if ( empty( $state['scanned'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not scanned yet', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( ! empty( $state['exists'] ) ) {
+                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), __( 'Companion found', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( ! empty( $state['disabled'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion; discovery is disabled', 'bloglogistics-markdown-for-agents' ) );
+            } else {
+                echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), __( 'Companion missing', 'bloglogistics-markdown-for-agents' ) );
+            }
+            echo '</td>';
+
+            echo '<td>';
+            if ( empty( $state['exists'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion to compare', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( ! empty( $state['stale'] ) ) {
+                $post_modified = isset( $item['post_modified'] ) ? (int) $item['post_modified'] : 0;
+                $md_modified   = isset( $item['markdown_modified'] ) ? (int) $item['markdown_modified'] : 0;
+                $detail        = __( 'WordPress content is newer than Markdown', 'bloglogistics-markdown-for-agents' );
+                if ( $post_modified && $md_modified ) {
+                    $detail .= ' (' . wp_date( 'Y-m-d H:i', $post_modified ) . ' / ' . wp_date( 'Y-m-d H:i', $md_modified ) . ')';
+                }
+                echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $detail );
+            } else {
+                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), __( 'Current by timestamp', 'bloglogistics-markdown-for-agents' ) );
+            }
+            echo '</td>';
+
+            echo '<td>';
+            if ( empty( $state['exists'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion to validate', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( ! empty( $state['encoding_bad'] ) ) {
+                $issue_labels = [];
+                foreach ( (array) ( $state['encoding']['issues'] ?? [] ) as $issue ) {
+                    $issue_labels[] = self::encoding_issue_label( (string) $issue );
+                }
+                echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), implode( ' ', $issue_labels ) );
+            } elseif ( ! empty( $state['encoding_bom'] ) ) {
+                echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), __( 'Valid UTF-8, but a BOM was detected', 'bloglogistics-markdown-for-agents' ) );
+            } else {
+                $detail = __( 'Valid UTF-8', 'bloglogistics-markdown-for-agents' );
+                if ( ! empty( $item['validation_reused'] ) ) {
+                    $detail .= '; ' . __( 'unchanged result reused', 'bloglogistics-markdown-for-agents' );
+                }
+                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), $detail );
+            }
+            echo '</td>';
+
+            echo '<td>';
+            if ( empty( $state['exists'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'No companion to verify', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( empty( $state['live'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not live-verified yet', 'bloglogistics-markdown-for-agents' ) );
+            } else {
+                $live_detail = sprintf(
+                    __( 'HTML %1$d; Markdown %2$d', 'bloglogistics-markdown-for-agents' ),
+                    (int) ( $live_item['html_status'] ?? 0 ),
+                    (int) ( $live_item['markdown_status'] ?? 0 )
+                );
+                $mime_label = self::markdown_mime_label( (string) ( $live_item['mime_state'] ?? 'bad' ), (string) ( $live_item['content_type'] ?? '' ) );
+                if ( '' !== $mime_label ) {
+                    $live_detail .= '; ' . $mime_label;
+                }
+                if ( ! empty( $state['live_bad'] ) ) {
+                    $issue_labels = [];
+                    foreach ( (array) ( $live_item['issues'] ?? [] ) as $issue ) {
+                        $issue_labels[] = self::live_issue_label( (string) $issue );
+                    }
+                    if ( $issue_labels ) {
+                        $live_detail .= '; ' . implode( ' ', $issue_labels );
+                    }
+                    echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), $live_detail );
+                } elseif ( ! empty( $state['live_review'] ) ) {
+                    echo self::status_markup( 'review', __( 'Review', 'bloglogistics-markdown-for-agents' ), $live_detail . '; ' . __( 'warning recorded', 'bloglogistics-markdown-for-agents' ) );
+                } else {
+                    echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), $live_detail );
+                }
+            }
+            echo '</td>';
+
+            echo '<td>';
+            if ( ! empty( $state['disabled'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Discovery disabled by choice', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( empty( $state['exists'] ) ) {
+                echo self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Not advertised without a companion', 'bloglogistics-markdown-for-agents' ) );
+            } elseif ( ! empty( $live_item['discovery'] ) && empty( $live_item['discovery']['passed'] ) ) {
+                echo self::status_markup( 'problem', __( 'Problem', 'bloglogistics-markdown-for-agents' ), __( 'Live discovery needs attention', 'bloglogistics-markdown-for-agents' ) );
+            } else {
+                $detail = ! empty( $live_item['discovery']['passed'] ) ? __( 'Enabled and live-verified', 'bloglogistics-markdown-for-agents' ) : __( 'Enabled', 'bloglogistics-markdown-for-agents' );
+                echo self::status_markup( 'healthy', __( 'Healthy', 'bloglogistics-markdown-for-agents' ), $detail );
+            }
+            echo '<label class="bl-mfa-discovery-toggle"><input type="checkbox" name="disabled_ids[]" value="' . esc_attr( (string) $post_id ) . '" ' . checked( ! empty( $state['disabled'] ), true, false ) . '> ' . esc_html__( 'Disable discovery', 'bloglogistics-markdown-for-agents' ) . '</label>';
+            echo '</td></tr>';
+        }
+
+        echo '</tbody></table></div>';
+        submit_button( __( 'Save Discovery Choices', 'bloglogistics-markdown-for-agents' ) );
+        echo '</form>';
+    }
+
+    /**
+     * Render the dedicated llms.txt validation tab.
+     *
+     * @param array<string,mixed> $health Saved health snapshot.
+     */
+    private static function render_llms_tab( array $health ): void {
+        $health_ready = ! empty( $health['scanned_at'] );
+        $llms         = isset( $health['llms'] ) && is_array( $health['llms'] ) ? $health['llms'] : [];
+        $exists       = ! empty( $llms['exists'] );
+        $valid        = ! empty( $llms['valid'] );
+        $encoding     = isset( $llms['encoding'] ) && is_array( $llms['encoding'] ) ? $llms['encoding'] : [];
+        $errors       = isset( $llms['errors'] ) && is_array( $llms['errors'] ) ? $llms['errors'] : [];
+        $warnings     = isset( $llms['warnings'] ) && is_array( $llms['warnings'] ) ? $llms['warnings'] : [];
+        $broken       = isset( $llms['broken_local_links'] ) && is_array( $llms['broken_local_links'] ) ? $llms['broken_local_links'] : [];
+        $duplicates   = isset( $llms['duplicate_links'] ) && is_array( $llms['duplicate_links'] ) ? $llms['duplicate_links'] : [];
+        $local_links  = isset( $llms['local_links'] ) && is_array( $llms['local_links'] ) ? $llms['local_links'] : [];
+
+        echo '<h2>' . esc_html__( 'llms.txt', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        echo '<p>' . esc_html__( 'This tab validates your user-managed llms.txt file. The plugin does not create, rewrite, or curate the file.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<div class="bl-mfa-health-grid">';
+        self::render_dashboard_card( __( 'File', 'bloglogistics-markdown-for-agents' ), $exists ? 1 : 0, ! $health_ready ? 'na' : ( $exists ? 'healthy' : 'problem' ), [], $exists ? __( 'Present', 'bloglogistics-markdown-for-agents' ) : __( 'Missing', 'bloglogistics-markdown-for-agents' ) );
+        self::render_dashboard_card( __( 'Validation problems', 'bloglogistics-markdown-for-agents' ), count( $errors ), ! $health_ready ? 'na' : ( $errors ? 'problem' : 'healthy' ), [], $valid ? __( 'Validation passed', 'bloglogistics-markdown-for-agents' ) : __( 'Needs attention', 'bloglogistics-markdown-for-agents' ) );
+        $encoding_status = ! $health_ready || ! $exists ? 'na' : ( empty( $encoding['valid'] ) ? 'problem' : ( ! empty( $encoding['bom'] ) ? 'review' : 'healthy' ) );
+        self::render_dashboard_card( __( 'Encoding', 'bloglogistics-markdown-for-agents' ), empty( $encoding['valid'] ) ? 0 : 1, $encoding_status, [], ! $exists ? __( 'Not applicable', 'bloglogistics-markdown-for-agents' ) : ( ! empty( $encoding['bom'] ) ? __( 'Valid UTF-8 with BOM warning', 'bloglogistics-markdown-for-agents' ) : __( 'Valid UTF-8', 'bloglogistics-markdown-for-agents' ) ) );
+        self::render_dashboard_card( __( 'Local Markdown links', 'bloglogistics-markdown-for-agents' ), count( $local_links ), ! $health_ready ? 'na' : ( $broken ? 'problem' : 'healthy' ), [], $broken ? sprintf( _n( '%d broken reference', '%d broken references', count( $broken ), 'bloglogistics-markdown-for-agents' ), count( $broken ) ) : __( 'No broken local references', 'bloglogistics-markdown-for-agents' ) );
+        self::render_dashboard_card( __( 'Duplicate links', 'bloglogistics-markdown-for-agents' ), count( $duplicates ), ! $health_ready ? 'na' : ( $duplicates ? 'review' : 'healthy' ), [], $duplicates ? __( 'Review duplicate entries', 'bloglogistics-markdown-for-agents' ) : __( 'No duplicates detected', 'bloglogistics-markdown-for-agents' ) );
+        echo '</div>';
+
+        self::render_scan_actions( 'llms', 'all' );
+
+        if ( ! $health_ready ) {
+            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'Run the Markdown scan to validate llms.txt and populate its local-reference table.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            return;
+        }
+
+        if ( $errors ) {
+            echo '<div class="notice notice-error inline"><p><strong>' . esc_html__( 'Problems:', 'bloglogistics-markdown-for-agents' ) . '</strong></p><ul class="bl-mfa-issue-list">';
+            foreach ( $errors as $issue ) {
+                if ( is_array( $issue ) ) {
+                    echo '<li>' . esc_html( self::llms_issue_label( $issue ) ) . '</li>';
+                }
+            }
+            echo '</ul></div>';
+        }
+        if ( $warnings ) {
+            echo '<div class="notice notice-warning inline"><p><strong>' . esc_html__( 'Review:', 'bloglogistics-markdown-for-agents' ) . '</strong></p><ul class="bl-mfa-issue-list">';
+            foreach ( $warnings as $issue ) {
+                if ( is_array( $issue ) ) {
+                    echo '<li>' . esc_html( self::llms_issue_label( $issue ) ) . '</li>';
+                }
+            }
+            echo '</ul></div>';
+        }
+
+        echo '<h3>' . esc_html__( 'Local Markdown References', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+        if ( ! $local_links ) {
+            if ( ! empty( $llms['local_links_checked'] ) ) {
+                echo '<p>' . esc_html__( 'Reference details were not stored by the previous plugin version. Run the scan once with v2.4.0 to populate this table.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+            } else {
+                echo '<p>' . esc_html__( 'No same-site Markdown links were found in llms.txt.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+            }
+            return;
+        }
+
+        echo '<div class="bl-mfa-table-wrap"><table class="widefat striped"><thead><tr><th>' . esc_html__( 'Markdown reference', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Status', 'bloglogistics-markdown-for-agents' ) . '</th></tr></thead><tbody>';
+        foreach ( $local_links as $link ) {
+            if ( ! is_array( $link ) || empty( $link['url'] ) ) {
+                continue;
+            }
+            $link_exists = ! empty( $link['exists'] );
+            echo '<tr><td class="bl-mfa-code-wrap"><a href="' . esc_url( (string) $link['url'] ) . '" target="_blank" rel="noopener noreferrer"><code>' . esc_html( (string) $link['url'] ) . '</code></a></td><td>';
+            echo self::status_markup( $link_exists ? 'healthy' : 'problem', $link_exists ? __( 'Healthy', 'bloglogistics-markdown-for-agents' ) : __( 'Problem', 'bloglogistics-markdown-for-agents' ), $link_exists ? __( 'Local file found', 'bloglogistics-markdown-for-agents' ) : __( 'Local file not found', 'bloglogistics-markdown-for-agents' ) );
+            echo '</td></tr>';
+        }
+        echo '</tbody></table></div>';
+    }
+
+    /**
+     * Render server diagnostics and .htaccess tools.
+     *
+     * @param array<string,mixed> $server          Server diagnostics.
+     * @param array<string,mixed> $htaccess_status Saved .htaccess status.
+     * @param array<int,mixed>    $backups         Plugin-created backups.
+     */
+    private static function render_server_tab( array $server, array $htaccess_status, array $backups ): void {
+        $server_type_label = match ( (string) ( $server['server_type'] ?? '' ) ) {
+            'apache'    => 'Apache',
+            'litespeed' => 'LiteSpeed',
+            'nginx'     => 'Nginx',
+            'iis'       => 'Microsoft IIS',
+            default     => __( 'Unknown', 'bloglogistics-markdown-for-agents' ),
+        };
+        $supports_htaccess      = ! empty( $server['supports_htaccess'] );
+        $writable               = ! empty( $server['htaccess_writable'] );
+        $rewrite_verified       = ! empty( $htaccess_status['rewrite_rule_verified'] );
+        $mime_rule_verified     = ! empty( $htaccess_status['mime_rule_verified'] );
+        $live_available         = ! empty( $htaccess_status['live_available'] );
+        $live_verified          = ! empty( $htaccess_status['live_verified'] );
+        $mime_live_verified     = ! empty( $htaccess_status['mime_live_verified'] );
+        $markdown_content_type  = isset( $htaccess_status['markdown_content_type'] ) ? (string) $htaccess_status['markdown_content_type'] : '';
+        $verified_at            = isset( $htaccess_status['verified_at'] ) ? (int) $htaccess_status['verified_at'] : 0;
+
+        echo '<h2>' . esc_html__( 'Server & .htaccess', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        echo '<p>' . esc_html__( 'Technical diagnostics and server-rule management live here so everyday Pages and Posts work remains uncluttered.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<div class="bl-mfa-health-grid">';
+        self::render_dashboard_card( __( 'Server', 'bloglogistics-markdown-for-agents' ), $server_type_label, 'na', [], __( 'Detected server family', 'bloglogistics-markdown-for-agents' ) );
+        self::render_dashboard_card( __( '.htaccess', 'bloglogistics-markdown-for-agents' ), $supports_htaccess ? 1 : 0, $supports_htaccess ? ( $writable ? 'healthy' : 'review' ) : 'na', [], $supports_htaccess ? ( $writable ? __( 'Available and writable', 'bloglogistics-markdown-for-agents' ) : __( 'Available but not writable', 'bloglogistics-markdown-for-agents' ) ) : __( 'Not used by this server', 'bloglogistics-markdown-for-agents' ) );
+        self::render_dashboard_card( __( 'Permalink rule', 'bloglogistics-markdown-for-agents' ), $rewrite_verified ? 1 : 0, ! $supports_htaccess ? 'na' : ( $rewrite_verified ? 'healthy' : 'review' ), [], $rewrite_verified ? __( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : __( 'Not verified', 'bloglogistics-markdown-for-agents' ) );
+        self::render_dashboard_card( __( 'Markdown MIME rule', 'bloglogistics-markdown-for-agents' ), $mime_rule_verified ? 1 : 0, ! $supports_htaccess ? 'na' : ( $mime_rule_verified ? 'healthy' : 'review' ), [], $mime_rule_verified ? __( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : __( 'Not verified', 'bloglogistics-markdown-for-agents' ) );
+        echo '</div>';
+
+        echo '<h3>' . esc_html__( 'Server Compatibility', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+        echo '<table class="form-table" role="presentation"><tbody>';
+        echo '<tr><th scope="row">' . esc_html__( 'Detected server', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . esc_html( $server_type_label ) . '</strong>';
+        if ( ! empty( $server['software'] ) ) {
+            echo '<span class="bl-mfa-health-detail">' . esc_html( (string) $server['software'] ) . '</span>';
+        }
+        echo '</td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( '.htaccess automation', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( $supports_htaccess ? 'healthy' : 'na', $supports_htaccess ? __( 'Healthy', 'bloglogistics-markdown-for-agents' ) : __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), $supports_htaccess ? __( 'Supported', 'bloglogistics-markdown-for-agents' ) : __( 'Manual server configuration required', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( 'mod_rewrite', 'bloglogistics-markdown-for-agents' ) . '</th><td><code>' . esc_html( (string) ( $server['mod_rewrite'] ?? 'unknown' ) ) . '</code></td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( 'mod_mime', 'bloglogistics-markdown-for-agents' ) . '</th><td><code>' . esc_html( (string) ( $server['mod_mime'] ?? 'unknown' ) ) . '</code></td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( '.htaccess writable', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( ! $supports_htaccess ? 'na' : ( $writable ? 'healthy' : 'review' ), ! $supports_htaccess ? __( 'Not applicable', 'bloglogistics-markdown-for-agents' ) : ( $writable ? __( 'Healthy', 'bloglogistics-markdown-for-agents' ) : __( 'Review', 'bloglogistics-markdown-for-agents' ) ), ! $supports_htaccess ? __( 'Not used by this server', 'bloglogistics-markdown-for-agents' ) : ( $writable ? __( 'Writable', 'bloglogistics-markdown-for-agents' ) : __( 'Not writable', 'bloglogistics-markdown-for-agents' ) ) ) . '</td></tr>';
+        echo '</tbody></table>';
+
+        if ( in_array( (string) ( $server['server_type'] ?? '' ), [ 'nginx', 'iis' ], true ) ) {
+            echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'This server does not use Apache .htaccess rules. The plugin will not try to install the permalink compatibility or Markdown MIME rules. Equivalent configuration must be set at the web-server level.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+        }
+
+        echo '<h3>' . esc_html__( 'WordPress / Markdown .htaccess Rules', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+        echo '<p>' . esc_html__( 'On Apache-compatible servers, the plugin maintains the permalink compatibility rule and the UTF-8 text/markdown MIME rule. Equivalent manually added directives are detected wherever they appear and are never duplicated.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<table class="form-table" role="presentation"><tbody>';
+        echo '<tr><th scope="row">' . esc_html__( 'Permalink compatibility rule', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( ! $supports_htaccess ? 'na' : ( $rewrite_verified ? 'healthy' : 'review' ), ! $supports_htaccess ? __( 'Not applicable', 'bloglogistics-markdown-for-agents' ) : ( $rewrite_verified ? __( 'Healthy', 'bloglogistics-markdown-for-agents' ) : __( 'Review', 'bloglogistics-markdown-for-agents' ) ), $rewrite_verified ? __( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : __( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
+        echo '<tr><th scope="row">' . esc_html__( 'Markdown MIME rule', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( ! $supports_htaccess ? 'na' : ( $mime_rule_verified ? 'healthy' : 'review' ), ! $supports_htaccess ? __( 'Not applicable', 'bloglogistics-markdown-for-agents' ) : ( $mime_rule_verified ? __( 'Healthy', 'bloglogistics-markdown-for-agents' ) : __( 'Review', 'bloglogistics-markdown-for-agents' ) ), $mime_rule_verified ? __( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : __( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
+        if ( ! empty( $htaccess_status['backup_file'] ) ) {
+            echo '<tr><th scope="row">' . esc_html__( 'Most recent backup', 'bloglogistics-markdown-for-agents' ) . '</th><td><code>' . esc_html( basename( (string) $htaccess_status['backup_file'] ) ) . '</code></td></tr>';
+        }
+        if ( $live_available ) {
+            $live_status = $live_verified && $mime_live_verified ? 'healthy' : 'problem';
+            $live_label  = $live_verified && $mime_live_verified ? __( 'Healthy', 'bloglogistics-markdown-for-agents' ) : __( 'Problem', 'bloglogistics-markdown-for-agents' );
+            $live_detail = sprintf(
+                __( 'HTML %1$d; Markdown %2$d', 'bloglogistics-markdown-for-agents' ),
+                (int) ( $htaccess_status['html_status'] ?? 0 ),
+                (int) ( $htaccess_status['markdown_status'] ?? 0 )
+            );
+            if ( '' !== $markdown_content_type ) {
+                $live_detail .= '; ' . $markdown_content_type;
+            }
+            echo '<tr><th scope="row">' . esc_html__( 'Live server-rule test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( $live_status, $live_label, $live_detail ) . '</td></tr>';
+        } elseif ( $rewrite_verified && $mime_rule_verified ) {
+            echo '<tr><th scope="row">' . esc_html__( 'Live server-rule test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . self::status_markup( 'na', __( 'Not applicable', 'bloglogistics-markdown-for-agents' ), __( 'Waiting for a detected non-homepage Markdown companion', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
+        }
+        if ( $verified_at ) {
+            echo '<tr><th scope="row">' . esc_html__( 'Last .htaccess check', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( wp_date( 'Y-m-d H:i:s T', $verified_at ) ) . '</td></tr>';
+        }
+        if ( ! empty( $htaccess_status['message'] ) ) {
+            echo '<tr><th scope="row">' . esc_html__( 'Status message', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $htaccess_status['message'] ) . '</td></tr>';
+        }
+        echo '</tbody></table>';
+
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+        wp_nonce_field( 'bloglogistics_mfa_htaccess' );
+        echo '<input type="hidden" name="action" value="bloglogistics_mfa_htaccess">';
+        echo '<input type="hidden" name="return_tab" value="server">';
+        echo '<input type="hidden" name="return_view" value="all">';
+        submit_button( __( 'Install / Repair and Verify .htaccess Rules', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
+        echo '</form>';
+        echo '<p class="description">' . esc_html__( 'Before adding a genuinely missing rule to an existing .htaccess file, the plugin creates a timestamped backup. Existing equivalent directives are left untouched.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+
+        echo '<h3 style="margin-top:1.5em;">' . esc_html__( '.htaccess Backup Management', 'bloglogistics-markdown-for-agents' ) . '</h3>';
+        if ( ! $backups ) {
+            echo '<p>' . esc_html__( 'No plugin-created .htaccess backups were found.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+            return;
+        }
+
+        echo '<p>';
+        printf(
+            esc_html__( '%d plugin-created .htaccess backups are present. Cleanup always preserves the newest three.', 'bloglogistics-markdown-for-agents' ),
+            count( $backups )
+        );
+        echo '</p>';
+        echo '<div class="bl-mfa-table-wrap"><table class="widefat striped" style="max-width:1000px"><thead><tr><th>' . esc_html__( 'Backup', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Created', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Size', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Retention', 'bloglogistics-markdown-for-agents' ) . '</th></tr></thead><tbody>';
+        foreach ( array_slice( $backups, 0, 10 ) as $index => $backup ) {
+            echo '<tr><td><code>' . esc_html( $backup['name'] ) . '</code></td><td>' . esc_html( $backup['mtime'] ? wp_date( 'Y-m-d H:i:s T', $backup['mtime'] ) : __( 'Unknown', 'bloglogistics-markdown-for-agents' ) ) . '</td><td>' . esc_html( size_format( max( 0, (int) $backup['size'] ) ) ) . '</td><td>' . esc_html( $index < self::BACKUP_RETAIN_COUNT ? __( 'Protected newest backup', 'bloglogistics-markdown-for-agents' ) : __( 'Eligible for cleanup', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
+        }
+        echo '</tbody></table></div>';
+        if ( count( $backups ) > self::BACKUP_RETAIN_COUNT ) {
+            echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-top:10px;">';
+            wp_nonce_field( 'bloglogistics_mfa_cleanup_backups' );
+            echo '<input type="hidden" name="action" value="bloglogistics_mfa_cleanup_backups">';
+            echo '<input type="hidden" name="return_tab" value="server">';
+            echo '<input type="hidden" name="return_view" value="all">';
+            submit_button( __( 'Delete Old Backups, Keep Newest 3', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
+            echo '</form>';
+        }
+    }
+
     public static function render_settings_page(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( esc_html__( 'You do not have permission to access this page.', 'bloglogistics-markdown-for-agents' ) );
         }
 
+        $tab             = self::settings_tab();
+        $view            = self::settings_view();
         $last_scan       = (int) get_option( self::LAST_SCAN_OPTION, 0 );
-        $has_llms        = '1' === get_option( self::LLMS_DETECTED_OPTION, '0' );
         $message         = isset( $_GET['bloglogistics_mfa_message'] ) ? sanitize_key( wp_unslash( $_GET['bloglogistics_mfa_message'] ) ) : '';
         $htaccess_status = get_option( self::HTACCESS_STATUS_OPTION, [] );
         $health          = get_option( self::HEALTH_OPTION, [] );
         $server          = self::server_diagnostics();
         $backups         = self::htaccess_backups();
 
-        if ( ! is_array( $htaccess_status ) ) {
-            $htaccess_status = [];
-        }
+        $htaccess_status = is_array( $htaccess_status ) ? $htaccess_status : [];
+        $health          = is_array( $health ) ? $health : [];
+        $live_health     = isset( $health['live'] ) && is_array( $health['live'] ) ? $health['live'] : [];
+        $live_items      = isset( $live_health['items'] ) && is_array( $live_health['items'] ) ? $live_health['items'] : [];
+        $page_count      = count( self::published_ids_by_type( 'page' ) );
+        $post_count      = count( self::published_ids_by_type( 'post' ) );
 
-        if ( ! is_array( $health ) ) {
-            $health = [];
-        }
-
-        $health_ready = ! empty( $health['scanned_at'] ) && isset( $health['items'] ) && is_array( $health['items'] );
-        $llms_health  = isset( $health['llms'] ) && is_array( $health['llms'] ) ? $health['llms'] : [];
-        $live_health  = isset( $health['live'] ) && is_array( $health['live'] ) ? $health['live'] : [];
-        $live_items   = isset( $live_health['items'] ) && is_array( $live_health['items'] ) ? $live_health['items'] : [];
-
-        $detected_ids = get_posts(
-            [
-                'post_type'              => [ 'post', 'page' ],
-                'post_status'            => 'publish',
-                'numberposts'            => -1,
-                'fields'                 => 'ids',
-                'meta_key'               => self::MARKDOWN_URL_META,
-                'meta_compare'           => 'EXISTS',
-                'orderby'                => 'title',
-                'order'                  => 'ASC',
-                'no_found_rows'          => true,
-                'update_post_meta_cache' => true,
-                'update_post_term_cache' => false,
-            ]
-        );
-
-        echo '<div class="wrap">';
+        echo '<div class="wrap bl-mfa-wrap">';
         echo '<h1>' . esc_html__( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ) . '</h1>';
-
         echo '<style>
-            .bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;max-width:1150px;margin:12px 0 20px}
-            .bl-mfa-health-card{background:#fff;border:1px solid #c3c4c7;border-radius:3px;padding:14px 16px}
-            .bl-mfa-health-card strong{display:block;font-size:24px;line-height:1.2;margin-bottom:4px}
-            .bl-mfa-health-ok{color:#008a20}.bl-mfa-health-warn{color:#996800}.bl-mfa-health-bad{color:#b32d2e}
-            .bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}
-            .bl-mfa-health-detail{display:block;color:#646970;margin-top:3px}
-            .bl-mfa-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
-            .bl-mfa-code-wrap{word-break:break-word}
+            .bl-mfa-wrap{max-width:1400px}.bl-mfa-tabs{margin-bottom:18px}.bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:12px 0 20px;max-width:1250px}.bl-mfa-health-card{display:block;box-sizing:border-box;background:#fff;border:1px solid #c3c4c7;border-left-width:4px;border-radius:4px;padding:14px 16px;min-height:116px;text-decoration:none;color:#1d2327}.bl-mfa-health-card:hover{color:#1d2327;box-shadow:0 1px 4px rgba(0,0,0,.12)}.bl-mfa-health-card strong{display:block;font-size:26px;line-height:1.15;margin:5px 0}.bl-mfa-card-label{display:block;font-weight:600}.bl-mfa-card-detail{display:block;color:#50575e;margin-top:4px}.bl-mfa-card-links{display:block;margin-top:8px}.bl-mfa-card-links a{font-weight:600}.bl-mfa-card-healthy{border-left-color:#00a32a;background:#edfaef}.bl-mfa-card-problem{border-left-color:#d63638;background:#fcf0f1}.bl-mfa-card-review{border-left-color:#dba617;background:#fcf9e8}.bl-mfa-card-na{border-left-color:#c3c4c7;background:#f0f0f1}.bl-mfa-status{display:inline-block;border:1px solid transparent;border-radius:999px;padding:2px 8px;font-weight:600;line-height:1.5}.bl-mfa-status-healthy{background:#edfaef;border-color:#00a32a;color:#006b1b}.bl-mfa-status-problem{background:#fcf0f1;border-color:#d63638;color:#8a2424}.bl-mfa-status-review{background:#fcf9e8;border-color:#dba617;color:#755c00}.bl-mfa-status-na{background:#f0f0f1;border-color:#c3c4c7;color:#50575e}.bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}.bl-mfa-health-detail{display:block;color:#646970;margin-top:4px;line-height:1.4}.bl-mfa-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.bl-mfa-actions form{margin:0}.bl-mfa-primary-actions{padding:10px 0}.bl-mfa-code-wrap{word-break:break-word}.bl-mfa-table-wrap{overflow-x:auto}.bl-mfa-filters{margin:8px 0 6px}.bl-mfa-discovery-toggle{display:block;margin-top:8px;color:#50575e}.bl-mfa-overview-meta{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 12px;color:#50575e}.bl-mfa-status-key{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 14px}.bl-mfa-status-key strong{margin-right:2px}.bl-mfa-issue-list{list-style:disc;margin-left:2em}.bl-mfa-how-it-works{max-width:900px}.bl-mfa-health-table .row-actions{position:static}.bl-mfa-health-table code{font-size:12px}@media(max-width:782px){.bl-mfa-health-grid{grid-template-columns:1fr}.bl-mfa-overview-meta{display:block}.bl-mfa-overview-meta span{display:block;margin-bottom:5px}}
         </style>';
 
         echo '<div class="notice notice-info inline"><p><strong>' . esc_html__( 'Editorial control stays with you.', 'bloglogistics-markdown-for-agents' ) . '</strong> ';
@@ -2134,23 +2991,18 @@ final class BL_Markdown_For_Agents {
             $removed   = isset( $_GET['removed'] ) ? absint( $_GET['removed'] ) : 0;
             $validated = isset( $_GET['validated'] ) ? absint( $_GET['validated'] ) : 0;
             $reused    = isset( $_GET['reused'] ) ? absint( $_GET['reused'] ) : 0;
-            $stale     = isset( $health['stale'] ) ? (int) $health['stale'] : 0;
-            $encoding  = isset( $health['encoding_issues'] ) ? (int) $health['encoding_issues'] : 0;
-
             echo '<div class="notice notice-success is-dismissible"><p>';
             printf(
-                esc_html__( 'Scan complete. Checked %1$d published posts/pages, detected %2$d companions, removed %3$d stale Markdown URL fields, validated %4$d changed files, reused %5$d unchanged validation results, found %6$d possibly stale companions, and found %7$d encoding issues.', 'bloglogistics-markdown-for-agents' ),
+                esc_html__( 'Scan complete. Checked %1$d published posts/pages, detected %2$d companions, removed %3$d stale Markdown URL fields, validated %4$d changed files, and reused %5$d unchanged validation results.', 'bloglogistics-markdown-for-agents' ),
                 $checked,
                 $found,
                 $removed,
                 $validated,
-                $reused,
-                $stale,
-                $encoding
+                $reused
             );
             echo '</p></div>';
         } elseif ( 'exclusions_saved' === $message ) {
-            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Per-page discovery choices saved.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Discovery choices saved.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
         } elseif ( 'bulk_done' === $message ) {
             $bulk     = isset( $_GET['bulk'] ) ? sanitize_key( wp_unslash( $_GET['bulk'] ) ) : '';
             $affected = isset( $_GET['affected'] ) ? absint( $_GET['affected'] ) : 0;
@@ -2198,424 +3050,21 @@ final class BL_Markdown_For_Agents {
             echo '<div class="notice ' . esc_attr( $notice_class ) . ' is-dismissible"><p>' . esc_html( (string) $htaccess_status['message'] ) . '</p></div>';
         }
 
-        echo '<h2>' . esc_html__( 'Markdown Health Dashboard', 'bloglogistics-markdown-for-agents' ) . '</h2>';
+        self::render_settings_tabs( $tab, $page_count, $post_count );
 
-        if ( ! $health_ready ) {
-            echo '<p>' . esc_html__( 'Run the Markdown scan to populate the health dashboard. The scan checks companion presence, freshness, UTF-8 encoding, common mojibake patterns, and llms.txt references without changing your Markdown content.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        if ( 'pages' === $tab ) {
+            self::render_content_tab( 'page', 'pages', $view, $health, $live_items );
+        } elseif ( 'posts' === $tab ) {
+            self::render_content_tab( 'post', 'posts', $view, $health, $live_items );
+        } elseif ( 'llms' === $tab ) {
+            self::render_llms_tab( $health );
+        } elseif ( 'server' === $tab ) {
+            self::render_server_tab( $server, $htaccess_status, $backups );
         } else {
-            $published         = isset( $health['published'] ) ? (int) $health['published'] : 0;
-            $found_count       = isset( $health['found'] ) ? (int) $health['found'] : 0;
-            $missing_count     = isset( $health['missing'] ) ? (int) $health['missing'] : 0;
-            $stale_count       = isset( $health['stale'] ) ? (int) $health['stale'] : 0;
-            $encoding_count    = isset( $health['encoding_issues'] ) ? (int) $health['encoding_issues'] : 0;
-            $encoding_warnings = isset( $health['encoding_warnings'] ) ? (int) $health['encoding_warnings'] : 0;
-            $excluded_count    = isset( $health['excluded'] ) ? (int) $health['excluded'] : 0;
-            $validated_count   = isset( $health['validated'] ) ? (int) $health['validated'] : 0;
-            $reused_count      = isset( $health['reused'] ) ? (int) $health['reused'] : 0;
-
-            echo '<div class="bl-mfa-health-grid">';
-            echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( $published ) ) . '</strong>' . esc_html__( 'Published posts/pages', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '<div class="bl-mfa-health-card"><strong class="bl-mfa-health-ok">' . esc_html( number_format_i18n( $found_count ) ) . '</strong>' . esc_html__( 'Companions found', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $missing_count ? 'bl-mfa-health-warn' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $missing_count ) ) . '</strong>' . esc_html__( 'Missing companions', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $stale_count ? 'bl-mfa-health-warn' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $stale_count ) ) . '</strong>' . esc_html__( 'Possibly stale', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $encoding_count ? 'bl-mfa-health-bad' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $encoding_count ) ) . '</strong>' . esc_html__( 'Encoding issues', 'bloglogistics-markdown-for-agents' );
-            if ( $encoding_warnings ) {
-                echo '<span class="bl-mfa-health-detail">' . esc_html( sprintf( _n( '%d BOM warning', '%d BOM warnings', $encoding_warnings, 'bloglogistics-markdown-for-agents' ), $encoding_warnings ) ) . '</span>';
-            }
-            echo '</div>';
-            echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( $excluded_count ) ) . '</strong>' . esc_html__( 'Discovery disabled', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( $validated_count ) ) . '</strong>' . esc_html__( 'Files validated this scan', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( $reused_count ) ) . '</strong>' . esc_html__( 'Unchanged results reused', 'bloglogistics-markdown-for-agents' ) . '</div>';
-            echo '</div>';
-
-            echo '<p class="description">';
-            printf(
-                esc_html__( 'Health snapshot refreshed %s. "Possibly stale" means the WordPress post/page was modified more than 60 seconds after the companion file timestamp. Deployment tools can alter file timestamps, so treat this as a review signal rather than proof that content differs.', 'bloglogistics-markdown-for-agents' ),
-                esc_html( wp_date( 'Y-m-d H:i:s T', (int) $health['scanned_at'] ) )
-            );
-            echo '</p>';
-
-            if ( $live_health ) {
-                $live_failed     = isset( $live_health['failed'] ) ? (int) $live_health['failed'] : 0;
-                $mime_failures   = isset( $live_health['mime_failures'] ) ? (int) $live_health['mime_failures'] : 0;
-                $mime_warnings   = isset( $live_health['mime_warnings'] ) ? (int) $live_health['mime_warnings'] : 0;
-                $discovery_fails = isset( $live_health['discovery_failures'] ) ? (int) $live_health['discovery_failures'] : 0;
-                echo '<h3>' . esc_html__( 'Live Verification', 'bloglogistics-markdown-for-agents' ) . '</h3>';
-                echo '<div class="bl-mfa-health-grid">';
-                echo '<div class="bl-mfa-health-card"><strong>' . esc_html( number_format_i18n( (int) ( $live_health['checked'] ?? 0 ) ) ) . '</strong>' . esc_html__( 'Live endpoints checked', 'bloglogistics-markdown-for-agents' ) . '</div>';
-                echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $live_failed ? 'bl-mfa-health-bad' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $live_failed ) ) . '</strong>' . esc_html__( 'Live failures', 'bloglogistics-markdown-for-agents' ) . '</div>';
-                echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $mime_failures ? 'bl-mfa-health-bad' : ( $mime_warnings ? 'bl-mfa-health-warn' : 'bl-mfa-health-ok' ) ) . '">' . esc_html( number_format_i18n( $mime_failures + $mime_warnings ) ) . '</strong>' . esc_html__( 'MIME findings', 'bloglogistics-markdown-for-agents' ) . '</div>';
-                echo '<div class="bl-mfa-health-card"><strong class="' . esc_attr( $discovery_fails ? 'bl-mfa-health-bad' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $discovery_fails ) ) . '</strong>' . esc_html__( 'Discovery failures', 'bloglogistics-markdown-for-agents' ) . '</div>';
-                echo '</div>';
-                if ( ! empty( $live_health['verified_at'] ) ) {
-                    echo '<p class="description">';
-                    printf(
-                        esc_html__( 'Last live verification: %s. Live verification makes same-site HTTP requests only when an administrator runs it.', 'bloglogistics-markdown-for-agents' ),
-                        esc_html( wp_date( 'Y-m-d H:i:s T', (int) $live_health['verified_at'] ) )
-                    );
-                    echo '</p>';
-                }
-            }
-
-            echo '<h3>' . esc_html__( 'llms.txt Validation', 'bloglogistics-markdown-for-agents' ) . '</h3>';
-            echo '<table class="form-table" role="presentation"><tbody>';
-            $llms_exists = ! empty( $llms_health['exists'] );
-            $llms_valid  = ! empty( $llms_health['valid'] );
-            echo '<tr><th scope="row">' . esc_html__( 'llms.txt', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $llms_exists ? 'bl-mfa-health-ok' : 'bl-mfa-health-warn' ) . '">' . ( $llms_exists ? esc_html__( 'Present', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Missing', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-            echo '<tr><th scope="row">' . esc_html__( 'Validation', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $llms_valid ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $llms_valid ? esc_html__( 'Passed', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-            $llms_encoding = isset( $llms_health['encoding'] ) && is_array( $llms_health['encoding'] ) ? $llms_health['encoding'] : [];
-            if ( $llms_exists ) {
-                $llms_encoding_valid = ! empty( $llms_encoding['valid'] );
-                $llms_bom            = ! empty( $llms_encoding['bom'] );
-                echo '<tr><th scope="row">' . esc_html__( 'Encoding', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $llms_encoding_valid ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $llms_encoding_valid ? esc_html__( 'Valid UTF-8', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
-                if ( $llms_bom ) {
-                    echo '<span class="bl-mfa-health-detail">' . esc_html__( 'UTF-8 BOM detected.', 'bloglogistics-markdown-for-agents' ) . '</span>';
-                }
-                echo '</td></tr>';
-            }
-            echo '<tr><th scope="row">' . esc_html__( 'Local Markdown links checked', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( number_format_i18n( isset( $llms_health['local_links_checked'] ) ? (int) $llms_health['local_links_checked'] : 0 ) ) . '</td></tr>';
-            $broken_count = isset( $llms_health['broken_local_links'] ) && is_array( $llms_health['broken_local_links'] ) ? count( $llms_health['broken_local_links'] ) : 0;
-            echo '<tr><th scope="row">' . esc_html__( 'Broken local Markdown references', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( $broken_count ? 'bl-mfa-health-bad' : 'bl-mfa-health-ok' ) . '">' . esc_html( number_format_i18n( $broken_count ) ) . '</strong></td></tr>';
-            echo '</tbody></table>';
-
-            $llms_errors   = isset( $llms_health['errors'] ) && is_array( $llms_health['errors'] ) ? $llms_health['errors'] : [];
-            $llms_warnings = isset( $llms_health['warnings'] ) && is_array( $llms_health['warnings'] ) ? $llms_health['warnings'] : [];
-
-            if ( $llms_errors ) {
-                echo '<div class="notice notice-error inline"><p><strong>' . esc_html__( 'llms.txt errors:', 'bloglogistics-markdown-for-agents' ) . '</strong></p><ul style="list-style:disc;margin-left:2em;">';
-                foreach ( $llms_errors as $issue ) {
-                    if ( is_array( $issue ) ) {
-                        echo '<li>' . esc_html( self::llms_issue_label( $issue ) ) . '</li>';
-                    }
-                }
-                echo '</ul></div>';
-            }
-
-            if ( $llms_warnings ) {
-                echo '<div class="notice notice-warning inline"><p><strong>' . esc_html__( 'llms.txt warnings:', 'bloglogistics-markdown-for-agents' ) . '</strong></p><ul style="list-style:disc;margin-left:2em;">';
-                foreach ( $llms_warnings as $issue ) {
-                    if ( is_array( $issue ) ) {
-                        echo '<li>' . esc_html( self::llms_issue_label( $issue ) ) . '</li>';
-                    }
-                }
-                echo '</ul></div>';
-            }
-
-            echo '<h3 style="margin-top:1.5em;">' . esc_html__( 'Content Health', 'bloglogistics-markdown-for-agents' ) . '</h3>';
-            echo '<table class="widefat striped bl-mfa-health-table"><thead><tr>';
-            echo '<th>' . esc_html__( 'Title', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '<th>' . esc_html__( 'Type', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '<th>' . esc_html__( 'Companion', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '<th>' . esc_html__( 'Freshness', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '<th>' . esc_html__( 'Encoding', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '<th>' . esc_html__( 'Live endpoint / MIME', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '<th>' . esc_html__( 'Discovery', 'bloglogistics-markdown-for-agents' ) . '</th>';
-            echo '</tr></thead><tbody>';
-
-            foreach ( $health['items'] as $post_id => $item ) {
-                $post_id = (int) $post_id;
-                if ( ! $post_id || ! is_array( $item ) || ! get_post( $post_id ) ) {
-                    continue;
-                }
-
-                $exists    = ! empty( $item['exists'] );
-                $disabled  = ! empty( $item['disabled'] );
-                $is_stale  = ! empty( $item['stale'] );
-                $encoding  = isset( $item['encoding'] ) && is_array( $item['encoding'] ) ? $item['encoding'] : [];
-                $live_item = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
-                $edit_link = get_edit_post_link( $post_id );
-
-                echo '<tr><td>';
-                if ( $edit_link ) {
-                    echo '<a href="' . esc_url( $edit_link ) . '">' . esc_html( get_the_title( $post_id ) ) . '</a>';
-                } else {
-                    echo esc_html( get_the_title( $post_id ) );
-                }
-                if ( ! empty( $item['markdown_relative'] ) ) {
-                    echo '<span class="bl-mfa-health-detail"><code>/' . esc_html( ltrim( (string) $item['markdown_relative'], '/' ) ) . '</code></span>';
-                }
-                echo '</td>';
-                echo '<td>' . esc_html( get_post_type( $post_id ) ) . '</td>';
-
-                if ( $exists ) {
-                    echo '<td><strong class="bl-mfa-health-ok">' . esc_html__( 'Found', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
-                } elseif ( $disabled ) {
-                    echo '<td><strong>' . esc_html__( 'Excluded', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
-                } else {
-                    echo '<td><strong class="bl-mfa-health-warn">' . esc_html__( 'Missing', 'bloglogistics-markdown-for-agents' ) . '</strong></td>';
-                }
-
-                echo '<td>';
-                if ( ! $exists ) {
-                    echo '-';
-                } elseif ( $is_stale ) {
-                    echo '<strong class="bl-mfa-health-warn">' . esc_html__( 'Possibly stale', 'bloglogistics-markdown-for-agents' ) . '</strong>';
-                    $post_modified = isset( $item['post_modified'] ) ? (int) $item['post_modified'] : 0;
-                    $md_modified   = isset( $item['markdown_modified'] ) ? (int) $item['markdown_modified'] : 0;
-                    if ( $post_modified && $md_modified ) {
-                        echo '<span class="bl-mfa-health-detail">';
-                        printf(
-                            esc_html__( 'Page: %1$s; Markdown: %2$s', 'bloglogistics-markdown-for-agents' ),
-                            esc_html( wp_date( 'Y-m-d H:i', $post_modified ) ),
-                            esc_html( wp_date( 'Y-m-d H:i', $md_modified ) )
-                        );
-                        echo '</span>';
-                    }
-                } else {
-                    echo '<strong class="bl-mfa-health-ok">' . esc_html__( 'Current by timestamp', 'bloglogistics-markdown-for-agents' ) . '</strong>';
-                }
-                echo '</td>';
-
-                echo '<td>';
-                if ( ! $exists ) {
-                    echo '-';
-                } elseif ( ! empty( $encoding['valid'] ) ) {
-                    echo '<strong class="bl-mfa-health-ok">' . esc_html__( 'Valid UTF-8', 'bloglogistics-markdown-for-agents' ) . '</strong>';
-                    if ( ! empty( $encoding['bom'] ) ) {
-                        echo '<span class="bl-mfa-health-detail">' . esc_html__( 'BOM warning', 'bloglogistics-markdown-for-agents' ) . '</span>';
-                    }
-                    if ( ! empty( $item['validation_reused'] ) ) {
-                        echo '<span class="bl-mfa-health-detail">' . esc_html__( 'Unchanged validation result reused', 'bloglogistics-markdown-for-agents' ) . '</span>';
-                    }
-                } else {
-                    echo '<strong class="bl-mfa-health-bad">' . esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) . '</strong>';
-                    if ( isset( $encoding['issues'] ) && is_array( $encoding['issues'] ) ) {
-                        foreach ( $encoding['issues'] as $issue ) {
-                            echo '<span class="bl-mfa-health-detail">' . esc_html( self::encoding_issue_label( (string) $issue ) ) . '</span>';
-                        }
-                    }
-                }
-                echo '</td>';
-
-                echo '<td>';
-                if ( ! $exists ) {
-                    echo '-';
-                } elseif ( ! $live_item ) {
-                    echo '<span>' . esc_html__( 'Not live-verified', 'bloglogistics-markdown-for-agents' ) . '</span>';
-                } else {
-                    $live_passed = ! empty( $live_item['passed'] );
-                    echo '<strong class="' . esc_attr( $live_passed ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $live_passed ? esc_html__( 'Passed', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Needs attention', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
-                    echo '<span class="bl-mfa-health-detail">';
-                    printf(
-                        esc_html__( 'HTML %1$d; Markdown %2$d', 'bloglogistics-markdown-for-agents' ),
-                        (int) ( $live_item['html_status'] ?? 0 ),
-                        (int) ( $live_item['markdown_status'] ?? 0 )
-                    );
-                    echo '</span>';
-                    $mime_state = isset( $live_item['mime_state'] ) ? (string) $live_item['mime_state'] : 'bad';
-                    $mime_class = 'preferred' === $mime_state ? 'bl-mfa-health-ok' : ( 'warning' === $mime_state ? 'bl-mfa-health-warn' : 'bl-mfa-health-bad' );
-                    echo '<span class="bl-mfa-health-detail ' . esc_attr( $mime_class ) . '">' . esc_html( self::markdown_mime_label( $mime_state, (string) ( $live_item['content_type'] ?? '' ) ) ) . '</span>';
-                    if ( ! empty( $live_item['html_redirected'] ) || ! empty( $live_item['markdown_redirected'] ) ) {
-                        echo '<span class="bl-mfa-health-detail">' . esc_html__( 'Redirect detected and followed.', 'bloglogistics-markdown-for-agents' ) . '</span>';
-                    }
-                    if ( isset( $live_item['issues'] ) && is_array( $live_item['issues'] ) ) {
-                        foreach ( $live_item['issues'] as $issue ) {
-                            if ( in_array( (string) $issue, [ 'missing_markdown_discovery', 'unexpected_markdown_discovery', 'missing_llms_discovery', 'unexpected_llms_discovery' ], true ) ) {
-                                continue;
-                            }
-                            echo '<span class="bl-mfa-health-detail bl-mfa-health-bad">' . esc_html( self::live_issue_label( (string) $issue ) ) . '</span>';
-                        }
-                    }
-                }
-                echo '</td>';
-
-                echo '<td>';
-                if ( $disabled ) {
-                    echo '<strong>' . esc_html__( 'Disabled', 'bloglogistics-markdown-for-agents' ) . '</strong>';
-                } elseif ( $exists ) {
-                    echo '<strong class="bl-mfa-health-ok">' . esc_html__( 'Advertised', 'bloglogistics-markdown-for-agents' ) . '</strong>';
-                } else {
-                    echo esc_html__( 'Not advertised', 'bloglogistics-markdown-for-agents' );
-                }
-
-                if ( $live_item && isset( $live_item['discovery'] ) && is_array( $live_item['discovery'] ) ) {
-                    $discovery_passed = ! empty( $live_item['discovery']['passed'] );
-                    echo '<span class="bl-mfa-health-detail ' . esc_attr( $discovery_passed ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $discovery_passed ? esc_html__( 'Live discovery verified', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Live discovery needs attention', 'bloglogistics-markdown-for-agents' ) ) . '</span>';
-                    if ( ! $discovery_passed && isset( $live_item['discovery']['issues'] ) && is_array( $live_item['discovery']['issues'] ) ) {
-                        foreach ( $live_item['discovery']['issues'] as $issue ) {
-                            echo '<span class="bl-mfa-health-detail bl-mfa-health-bad">' . esc_html( self::live_issue_label( (string) $issue ) ) . '</span>';
-                        }
-                    }
-                }
-                echo '</td></tr>';
-            }
-
-            echo '</tbody></table>';
+            self::render_overview_tab( $health, $htaccess_status, $server, $last_scan );
         }
 
-        echo '<div class="bl-mfa-actions">';
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-        wp_nonce_field( 'bloglogistics_mfa_scan' );
-        echo '<input type="hidden" name="action" value="bloglogistics_mfa_scan">';
-        submit_button( __( 'Scan Changes and Refresh Health', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
-        echo ' <button type="submit" class="button" name="force_full_scan" value="1">' . esc_html__( 'Force Full Rescan', 'bloglogistics-markdown-for-agents' ) . '</button>';
-        echo '</form>';
-
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-        wp_nonce_field( 'bloglogistics_mfa_live_verify' );
-        echo '<input type="hidden" name="action" value="bloglogistics_mfa_live_verify">';
-        submit_button( __( 'Run Live Endpoint Verification', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
-        echo '</form>';
-        echo '</div>';
-        echo '<p class="description">' . esc_html__( 'The incremental scan always checks existence, timestamps, and sizes, but reuses encoding validation for unchanged files. Live verification is separate because it makes same-site HTTP requests and checks HTTP status, redirects, Markdown MIME type, and discovery markup. Up to 75 companions are verified per run.', 'bloglogistics-markdown-for-agents' ) . '</p>';
-
-        echo '<h2 style="margin-top:2em;">' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        echo '<ol>';
-        echo '<li>' . esc_html__( 'You create a carefully curated /llms.txt file and any Markdown companion files you want to publish.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'For a normal page such as /about-us/, place its companion at /about-us/index.md. The homepage companion is /index.md.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'Run the incremental scan after files are added, removed, moved, or edited. Use Force Full Rescan when you want every companion re-read regardless of timestamps.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'Run live verification when you want to confirm public HTTP responses, MIME type, redirects, and discovery markup.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '<li>' . esc_html__( 'On normal public page loads, the plugin performs no filesystem scans or live verification requests. It only reads already-stored metadata and outputs discovery markup once for eligible pages.', 'bloglogistics-markdown-for-agents' ) . '</li>';
-        echo '</ol>';
-
-        echo '<table class="form-table" role="presentation"><tbody>';
-        echo '<tr><th scope="row">' . esc_html__( 'llms.txt detected at last scan', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $has_llms ? esc_html__( 'Yes', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'No', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( 'Markdown companions detected', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . esc_html( number_format_i18n( count( $detected_ids ) ) ) . '</strong></td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( 'Last scan', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . ( $last_scan ? esc_html( wp_date( 'Y-m-d H:i:s T', $last_scan ) ) : esc_html__( 'Not yet scanned', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
-        echo '</tbody></table>';
-
-        echo '<h2 style="margin-top:2em;">' . esc_html__( 'Server Compatibility Diagnostics', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        $server_type_label = match ( (string) $server['server_type'] ) {
-            'apache'    => 'Apache',
-            'litespeed' => 'LiteSpeed',
-            'nginx'     => 'Nginx',
-            'iis'       => 'Microsoft IIS',
-            default     => __( 'Unknown', 'bloglogistics-markdown-for-agents' ),
-        };
-        echo '<table class="form-table" role="presentation"><tbody>';
-        echo '<tr><th scope="row">' . esc_html__( 'Detected server', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . esc_html( $server_type_label ) . '</strong>';
-        if ( ! empty( $server['software'] ) ) {
-            echo '<span class="bl-mfa-health-detail">' . esc_html( (string) $server['software'] ) . '</span>';
-        }
-        echo '</td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( '.htaccess automation', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( ! empty( $server['supports_htaccess'] ) ? 'bl-mfa-health-ok' : 'bl-mfa-health-warn' ) . '">' . ( ! empty( $server['supports_htaccess'] ) ? esc_html__( 'Supported', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Manual server configuration required', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( 'mod_rewrite', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $server['mod_rewrite'] ) . '</td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( 'mod_mime', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $server['mod_mime'] ) . '</td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( '.htaccess writable', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong class="' . esc_attr( ! empty( $server['htaccess_writable'] ) ? 'bl-mfa-health-ok' : 'bl-mfa-health-warn' ) . '">' . ( ! empty( $server['htaccess_writable'] ) ? esc_html__( 'Yes', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'No', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-        echo '</tbody></table>';
-        if ( in_array( (string) $server['server_type'], [ 'nginx', 'iis' ], true ) ) {
-            echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'This server does not use Apache .htaccess rules. The plugin will not try to install the permalink compatibility or Markdown MIME rules. Equivalent permalink handling and Markdown MIME configuration must be set at the web-server level.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
-        }
-
-        echo '<h2 style="margin-top:2em;">' . esc_html__( 'WordPress / Markdown .htaccess Rules', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        echo '<p>' . esc_html__( 'On Apache-compatible servers, the plugin maintains two root .htaccess protections: a permalink compatibility rule so /slug/ continues to load WordPress beside /slug/index.md, and a MIME rule so .md files are served as UTF-8 text/markdown. Existing equivalent directives are respected wherever they already appear and are never duplicated.', 'bloglogistics-markdown-for-agents' ) . '</p>';
-
-        $file_verified         = ! empty( $htaccess_status['file_verified'] );
-        $rewrite_verified      = ! empty( $htaccess_status['rewrite_rule_verified'] );
-        $mime_rule_verified    = ! empty( $htaccess_status['mime_rule_verified'] );
-        $live_available        = ! empty( $htaccess_status['live_available'] );
-        $live_verified         = ! empty( $htaccess_status['live_verified'] );
-        $mime_live_verified    = ! empty( $htaccess_status['mime_live_verified'] );
-        $markdown_content_type = isset( $htaccess_status['markdown_content_type'] ) ? (string) $htaccess_status['markdown_content_type'] : '';
-        $verified_at           = isset( $htaccess_status['verified_at'] ) ? (int) $htaccess_status['verified_at'] : 0;
-
-        echo '<table class="form-table" role="presentation"><tbody>';
-        echo '<tr><th scope="row">' . esc_html__( 'Permalink compatibility rule', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $rewrite_verified ? esc_html__( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-        echo '<tr><th scope="row">' . esc_html__( 'Markdown MIME rule', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $mime_rule_verified ? esc_html__( 'Present and verified', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not verified', 'bloglogistics-markdown-for-agents' ) ) . '</strong></td></tr>';
-        if ( ! empty( $htaccess_status['backup_file'] ) ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Most recent backup', 'bloglogistics-markdown-for-agents' ) . '</th><td><code>' . esc_html( basename( (string) $htaccess_status['backup_file'] ) ) . '</code></td></tr>';
-        }
-        if ( $live_available ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Live .htaccess test', 'bloglogistics-markdown-for-agents' ) . '</th><td><strong>' . ( $live_verified ? esc_html__( 'Passed', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Did not pass', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
-            if ( ! empty( $htaccess_status['html_url'] ) ) {
-                echo '<br><span class="description">' . esc_html__( 'WordPress page:', 'bloglogistics-markdown-for-agents' ) . ' <code>' . esc_html( (string) $htaccess_status['html_url'] ) . '</code> (' . esc_html( (string) (int) $htaccess_status['html_status'] ) . ')</span>';
-            }
-            if ( ! empty( $htaccess_status['markdown_url'] ) ) {
-                echo '<br><span class="description">' . esc_html__( 'Markdown companion:', 'bloglogistics-markdown-for-agents' ) . ' <code>' . esc_html( (string) $htaccess_status['markdown_url'] ) . '</code> (' . esc_html( (string) (int) $htaccess_status['markdown_status'] ) . ')</span>';
-            }
-            echo '<br><span class="description">' . esc_html__( 'Markdown MIME:', 'bloglogistics-markdown-for-agents' ) . ' <strong class="' . esc_attr( $mime_live_verified ? 'bl-mfa-health-ok' : 'bl-mfa-health-bad' ) . '">' . ( $mime_live_verified ? esc_html__( 'Live and correct', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Not confirmed live', 'bloglogistics-markdown-for-agents' ) ) . '</strong>';
-            if ( '' !== $markdown_content_type ) {
-                echo ' <code>' . esc_html( $markdown_content_type ) . '</code>';
-            }
-            echo '</span>';
-            echo '</td></tr>';
-        } elseif ( $file_verified ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Live .htaccess test', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html__( 'Waiting for a detected non-homepage Markdown companion.', 'bloglogistics-markdown-for-agents' ) . '</td></tr>';
-        }
-        if ( $verified_at ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Last .htaccess check', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( wp_date( 'Y-m-d H:i:s T', $verified_at ) ) . '</td></tr>';
-        }
-        if ( ! empty( $htaccess_status['message'] ) ) {
-            echo '<tr><th scope="row">' . esc_html__( 'Status', 'bloglogistics-markdown-for-agents' ) . '</th><td>' . esc_html( (string) $htaccess_status['message'] ) . '</td></tr>';
-        }
-        echo '</tbody></table>';
-
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-        wp_nonce_field( 'bloglogistics_mfa_htaccess' );
-        echo '<input type="hidden" name="action" value="bloglogistics_mfa_htaccess">';
-        submit_button( __( 'Install / Repair and Verify .htaccess Rules', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
-        echo '</form>';
-        echo '<p class="description">' . esc_html__( 'Before adding either missing rule to an existing .htaccess file, the plugin creates one timestamped backup beside it. If equivalent directives already exist, the file is left untouched and no unnecessary backup is created. If a write cannot be verified, the plugin attempts to restore the original file automatically.', 'bloglogistics-markdown-for-agents' ) . '</p>';
-
-        echo '<h3 style="margin-top:1.5em;">' . esc_html__( '.htaccess Backup Management', 'bloglogistics-markdown-for-agents' ) . '</h3>';
-        if ( ! $backups ) {
-            echo '<p>' . esc_html__( 'No plugin-created .htaccess backups were found.', 'bloglogistics-markdown-for-agents' ) . '</p>';
-        } else {
-            echo '<p>';
-            printf(
-                esc_html__( '%d plugin-created .htaccess backups are present. Cleanup always preserves the newest three.', 'bloglogistics-markdown-for-agents' ),
-                count( $backups )
-            );
-            echo '</p>';
-            echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>' . esc_html__( 'Backup', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Created', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Size', 'bloglogistics-markdown-for-agents' ) . '</th><th>' . esc_html__( 'Retention', 'bloglogistics-markdown-for-agents' ) . '</th></tr></thead><tbody>';
-            foreach ( array_slice( $backups, 0, 10 ) as $index => $backup ) {
-                echo '<tr><td><code>' . esc_html( $backup['name'] ) . '</code></td><td>' . esc_html( $backup['mtime'] ? wp_date( 'Y-m-d H:i:s T', $backup['mtime'] ) : __( 'Unknown', 'bloglogistics-markdown-for-agents' ) ) . '</td><td>' . esc_html( size_format( max( 0, (int) $backup['size'] ) ) ) . '</td><td>' . ( $index < self::BACKUP_RETAIN_COUNT ? esc_html__( 'Protected newest backup', 'bloglogistics-markdown-for-agents' ) : esc_html__( 'Eligible for cleanup', 'bloglogistics-markdown-for-agents' ) ) . '</td></tr>';
-            }
-            echo '</tbody></table>';
-            if ( count( $backups ) > self::BACKUP_RETAIN_COUNT ) {
-                echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-top:10px;">';
-                wp_nonce_field( 'bloglogistics_mfa_cleanup_backups' );
-                echo '<input type="hidden" name="action" value="bloglogistics_mfa_cleanup_backups">';
-                submit_button( __( 'Delete Old Backups, Keep Newest 3', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
-                echo '</form>';
-            }
-        }
-
-        echo '<h2 style="margin-top:2em;">' . esc_html__( 'Detected Markdown Companions', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        if ( empty( $detected_ids ) ) {
-            echo '<p>' . esc_html__( 'No Markdown companions are currently recorded. Upload your curated files, then run the scan.', 'bloglogistics-markdown-for-agents' ) . '</p>';
-            echo '</div>';
-            return;
-        }
-
-        echo '<p>' . esc_html__( 'Use the individual checkbox to suppress discovery for a specific post or page. Use the selection column and bulk action menu to enable or disable discovery, force a selected revalidation, or run live verification for selected items.', 'bloglogistics-markdown-for-agents' ) . '</p>';
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-        wp_nonce_field( 'bloglogistics_mfa_save_exclusions' );
-        echo '<input type="hidden" name="action" value="bloglogistics_mfa_save_exclusions">';
-        echo '<div class="bl-mfa-actions"><select name="bulk_action">';
-        echo '<option value="">' . esc_html__( 'Bulk actions', 'bloglogistics-markdown-for-agents' ) . '</option>';
-        echo '<option value="enable">' . esc_html__( 'Enable discovery', 'bloglogistics-markdown-for-agents' ) . '</option>';
-        echo '<option value="disable">' . esc_html__( 'Disable discovery', 'bloglogistics-markdown-for-agents' ) . '</option>';
-        echo '<option value="rescan">' . esc_html__( 'Force revalidate selected', 'bloglogistics-markdown-for-agents' ) . '</option>';
-        echo '<option value="verify">' . esc_html__( 'Live verify selected', 'bloglogistics-markdown-for-agents' ) . '</option>';
-        echo '</select><button type="submit" class="button" name="apply_bulk" value="1">' . esc_html__( 'Apply', 'bloglogistics-markdown-for-agents' ) . '</button></div>';
-
-        echo '<table class="widefat striped"><thead><tr>';
-        echo '<td class="check-column"><input type="checkbox" id="bl-mfa-select-all" aria-label="' . esc_attr__( 'Select all companions', 'bloglogistics-markdown-for-agents' ) . '"></td>';
-        echo '<th>' . esc_html__( 'Title', 'bloglogistics-markdown-for-agents' ) . '</th>';
-        echo '<th>' . esc_html__( 'Type', 'bloglogistics-markdown-for-agents' ) . '</th>';
-        echo '<th>' . esc_html__( 'Markdown URL', 'bloglogistics-markdown-for-agents' ) . '</th>';
-        echo '<th>' . esc_html__( 'Do not advertise', 'bloglogistics-markdown-for-agents' ) . '</th>';
-        echo '</tr></thead><tbody>';
-
-        foreach ( $detected_ids as $post_id ) {
-            $post_id      = (int) $post_id;
-            $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
-            $disabled     = self::is_discovery_disabled( $post_id );
-            $edit_link    = get_edit_post_link( $post_id );
-            echo '<tr><th scope="row" class="check-column"><input class="bl-mfa-row-select" type="checkbox" name="selected_ids[]" value="' . esc_attr( (string) $post_id ) . '" aria-label="' . esc_attr( sprintf( __( 'Select %s', 'bloglogistics-markdown-for-agents' ), get_the_title( $post_id ) ) ) . '"></th><td>';
-            if ( $edit_link ) {
-                echo '<a href="' . esc_url( $edit_link ) . '">' . esc_html( get_the_title( $post_id ) ) . '</a>';
-            } else {
-                echo esc_html( get_the_title( $post_id ) );
-            }
-            echo '</td><td>' . esc_html( get_post_type( $post_id ) ) . '</td><td class="bl-mfa-code-wrap"><code>' . esc_html( $markdown_url ) . '</code></td><td><label><input type="checkbox" name="disabled_ids[]" value="' . esc_attr( (string) $post_id ) . '" ' . checked( $disabled, true, false ) . '> ' . esc_html__( 'Do not advertise Markdown or llms.txt from this page', 'bloglogistics-markdown-for-agents' ) . '</label></td></tr>';
-        }
-
-        echo '</tbody></table>';
-        submit_button( __( 'Save Per-page Choices', 'bloglogistics-markdown-for-agents' ) );
-        echo '</form>';
-        echo '<script>document.addEventListener("DOMContentLoaded",function(){var a=document.getElementById("bl-mfa-select-all");if(!a){return;}a.addEventListener("change",function(){document.querySelectorAll(".bl-mfa-row-select").forEach(function(c){c.checked=a.checked;});});});</script>';
+        echo '<script>document.addEventListener("DOMContentLoaded",function(){document.querySelectorAll(".bl-mfa-select-all").forEach(function(a){a.addEventListener("change",function(){var form=a.closest("form");if(!form){return;}form.querySelectorAll(".bl-mfa-row-select").forEach(function(c){c.checked=a.checked;});});});});</script>';
         echo '</div>';
     }
 
@@ -2626,8 +3075,9 @@ final class BL_Markdown_For_Agents {
 
         check_admin_referer( 'bloglogistics_mfa_scan' );
 
-        $force  = ! empty( $_POST['force_full_scan'] );
-        $result = self::scan_markdown_files( $force );
+        $force   = ! empty( $_POST['force_full_scan'] );
+        $context = self::return_context();
+        $result  = self::scan_markdown_files( $force );
         self::ensure_htaccess_rule( true );
         delete_option( self::HTACCESS_NOTICE_OPTION );
 
@@ -2635,6 +3085,8 @@ final class BL_Markdown_For_Agents {
             add_query_arg(
                 [
                     'page'                      => self::SETTINGS_SLUG,
+                    'tab'                       => $context['tab'],
+                    'view'                      => $context['view'],
                     'bloglogistics_mfa_message' => 'scanned',
                     'checked'                   => $result['checked'],
                     'found'                     => $result['found'],
@@ -2655,6 +3107,7 @@ final class BL_Markdown_For_Agents {
         }
 
         check_admin_referer( 'bloglogistics_mfa_htaccess' );
+        $context = self::return_context( 'server' );
         self::ensure_htaccess_rule( true );
         delete_option( self::HTACCESS_NOTICE_OPTION );
 
@@ -2662,6 +3115,8 @@ final class BL_Markdown_For_Agents {
             add_query_arg(
                 [
                     'page'                      => self::SETTINGS_SLUG,
+                    'tab'                       => $context['tab'],
+                    'view'                      => $context['view'],
                     'bloglogistics_mfa_message' => 'htaccess_checked',
                 ],
                 admin_url( 'admin.php' )
@@ -2676,17 +3131,54 @@ final class BL_Markdown_For_Agents {
         }
 
         check_admin_referer( 'bloglogistics_mfa_live_verify' );
-        $result = self::verify_live_endpoints();
+        $context = self::return_context();
+        $result  = self::verify_live_endpoints();
 
         wp_safe_redirect(
             add_query_arg(
                 [
                     'page'                      => self::SETTINGS_SLUG,
+                    'tab'                       => $context['tab'],
+                    'view'                      => $context['view'],
                     'bloglogistics_mfa_message' => 'live_verified',
                     'checked'                   => (int) $result['checked'],
                     'passed'                    => (int) $result['passed'],
                     'failed'                    => (int) $result['failed'],
                     'truncated'                 => ! empty( $result['truncated'] ) ? 1 : 0,
+                ],
+                admin_url( 'admin.php' )
+            )
+        );
+        exit;
+    }
+
+    public static function handle_verify_item(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You do not have permission to run live Markdown verification.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+        check_admin_referer( 'bloglogistics_mfa_verify_item_' . $post_id );
+        $context = self::return_context();
+        $post    = $post_id ? get_post( $post_id ) : null;
+
+        if ( ! $post || 'publish' !== $post->post_status || ! in_array( $post->post_type, [ 'post', 'page' ], true ) ) {
+            wp_die( esc_html__( 'The selected content could not be verified.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        $result = self::verify_live_endpoints( [ $post_id ] );
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page'                      => self::SETTINGS_SLUG,
+                    'tab'                       => $context['tab'],
+                    'view'                      => $context['view'],
+                    'bloglogistics_mfa_message' => 'live_verified',
+                    'checked'                   => (int) $result['checked'],
+                    'passed'                    => (int) $result['passed'],
+                    'failed'                    => (int) $result['failed'],
+                    'truncated'                 => 0,
                 ],
                 admin_url( 'admin.php' )
             )
@@ -2700,12 +3192,15 @@ final class BL_Markdown_For_Agents {
         }
 
         check_admin_referer( 'bloglogistics_mfa_cleanup_backups' );
-        $result = self::cleanup_old_htaccess_backups();
+        $context = self::return_context( 'server' );
+        $result  = self::cleanup_old_htaccess_backups();
 
         wp_safe_redirect(
             add_query_arg(
                 [
                     'page'                      => self::SETTINGS_SLUG,
+                    'tab'                       => $context['tab'],
+                    'view'                      => $context['view'],
                     'bloglogistics_mfa_message' => 'backups_cleaned',
                     'deleted'                   => (int) $result['deleted'],
                     'failed'                    => (int) $result['failed'],
@@ -2723,6 +3218,7 @@ final class BL_Markdown_For_Agents {
         }
 
         check_admin_referer( 'bloglogistics_mfa_save_exclusions' );
+        $context = self::return_context();
 
         $disabled_ids = isset( $_POST['disabled_ids'] ) && is_array( $_POST['disabled_ids'] )
             ? array_values( array_unique( array_filter( array_map( 'absint', wp_unslash( $_POST['disabled_ids'] ) ) ) ) )
@@ -2730,27 +3226,47 @@ final class BL_Markdown_For_Agents {
         $selected_ids = isset( $_POST['selected_ids'] ) && is_array( $_POST['selected_ids'] )
             ? array_values( array_unique( array_filter( array_map( 'absint', wp_unslash( $_POST['selected_ids'] ) ) ) ) )
             : [];
+        $managed_ids = isset( $_POST['managed_ids'] ) && is_array( $_POST['managed_ids'] )
+            ? array_values( array_unique( array_filter( array_map( 'absint', wp_unslash( $_POST['managed_ids'] ) ) ) ) )
+            : [];
         $bulk_action = ! empty( $_POST['apply_bulk'] ) && isset( $_POST['bulk_action'] ) ? sanitize_key( wp_unslash( $_POST['bulk_action'] ) ) : '';
 
-        $detected_ids = get_posts(
+        $published_ids = get_posts(
             [
                 'post_type'              => [ 'post', 'page' ],
                 'post_status'            => 'publish',
                 'numberposts'            => -1,
                 'fields'                 => 'ids',
-                'meta_key'               => self::MARKDOWN_URL_META,
-                'meta_compare'           => 'EXISTS',
                 'no_found_rows'          => true,
                 'update_post_meta_cache' => false,
                 'update_post_term_cache' => false,
             ]
         );
-        $detected_ids = array_map( 'absint', $detected_ids );
-        $selected_ids = array_values( array_intersect( $selected_ids, $detected_ids ) );
+        $published_ids = array_map( 'absint', $published_ids );
 
-        // Save the individual checkbox state first so the page continues to
-        // behave exactly as it did before bulk tools were added.
-        foreach ( $detected_ids as $post_id ) {
+        if ( ! $managed_ids ) {
+            // Compatibility with forms submitted by earlier plugin versions.
+            $managed_ids = get_posts(
+                [
+                    'post_type'              => [ 'post', 'page' ],
+                    'post_status'            => 'publish',
+                    'numberposts'            => -1,
+                    'fields'                 => 'ids',
+                    'meta_key'               => self::MARKDOWN_URL_META,
+                    'meta_compare'           => 'EXISTS',
+                    'no_found_rows'          => true,
+                    'update_post_meta_cache' => false,
+                    'update_post_term_cache' => false,
+                ]
+            );
+            $managed_ids = array_map( 'absint', $managed_ids );
+        }
+
+        $managed_ids  = array_values( array_intersect( $managed_ids, $published_ids ) );
+        $disabled_ids = array_values( array_intersect( $disabled_ids, $managed_ids ) );
+        $selected_ids = array_values( array_intersect( $selected_ids, $managed_ids ) );
+
+        foreach ( $managed_ids as $post_id ) {
             if ( in_array( $post_id, $disabled_ids, true ) ) {
                 update_post_meta( $post_id, self::DISABLED_META, '1' );
             } else {
@@ -2776,9 +3292,6 @@ final class BL_Markdown_For_Agents {
             $affected  = count( $selected_ids );
         }
 
-        // Refresh the administrator-only health snapshot. The incremental
-        // scanner reuses unchanged validation results, while selected rescan
-        // rows are explicitly revalidated.
         self::scan_markdown_files( false, $force_ids );
 
         if ( $selected_ids && 'verify' === $bulk_action ) {
@@ -2794,6 +3307,8 @@ final class BL_Markdown_For_Agents {
             add_query_arg(
                 [
                     'page'                      => self::SETTINGS_SLUG,
+                    'tab'                       => $context['tab'],
+                    'view'                      => $context['view'],
                     'bloglogistics_mfa_message' => $message,
                     'bulk'                      => $bulk_action,
                     'affected'                  => $affected,
@@ -2828,7 +3343,7 @@ final class BL_Markdown_For_Agents {
             echo '<p style="word-break:break-word;"><a href="' . esc_url( $markdown_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $markdown_url ) . '</a></p>';
         } else {
             echo '<p><strong>' . esc_html__( 'No Markdown companion is currently recorded for this content.', 'bloglogistics-markdown-for-agents' ) . '</strong></p>';
-            echo '<p>' . esc_html__( 'Create the curated index.md file yourself, then run BlogLogistics > Markdown for Agents > Scan for Markdown Files.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+            echo '<p>' . esc_html__( 'Create the curated index.md file yourself, then run BlogLogistics > Markdown for Agents > Scan Changes and Refresh Health.', 'bloglogistics-markdown-for-agents' ) . '</p>';
         }
 
         echo '<p><label><input type="checkbox" name="bloglogistics_mfa_disable_discovery" value="1" ' . checked( $disabled, true, false ) . '> ' . esc_html__( 'Do not advertise Markdown or llms.txt from this page', 'bloglogistics-markdown-for-agents' ) . '</label></p>';

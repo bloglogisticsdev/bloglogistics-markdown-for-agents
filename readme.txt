@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.3.1
+Stable tag: 2.4.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extends it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. These checks do not run on normal public page loads and do not modify Markdown content.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganizes these tools into an easier tabbed interface with separate Pages and Posts views, filtered health states, linked dashboard cards, a dedicated llms.txt view, and a separate Server & .htaccess area. These checks do not run on normal public page loads and do not modify Markdown content.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -54,9 +54,10 @@ Those files remain entirely under the site owner's control. This is intentional 
 5. Click **Scan Changes and Refresh Health**. The incremental scan detects companion files, refreshes the Markdown Health Dashboard, validates changed files and llms.txt references, and reuses unchanged encoding-validation results.
 6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 7. Use **Run Live Endpoint Verification** to check public HTTP status, redirects, Markdown MIME type, and discovery markup.
-8. Review detected companions and use individual or bulk controls to enable or disable discovery, force selected revalidation, or live-verify selected items.
-9. If needed, use **Install / Repair and Verify .htaccess Rules** and review server compatibility, Markdown MIME delivery, and backup status on the same screen.
-10. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
+8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, and manage discovery or verification actions.
+9. Use the **llms.txt** tab for focused validation and local Markdown-reference health.
+10. Use **Server & .htaccess** for server diagnostics, rule repair, live server-rule verification, and backup management.
+11. Purge any WordPress/CDN page cache after scanning or changing per-page discovery settings.
 
 == Frequently Asked Questions ==
 
@@ -106,7 +107,7 @@ For a WordPress post or page with a recorded Markdown companion, the plugin read
 The scan does not assign a Markdown URL to that page, so the public page outputs no Markdown discovery markup.
 
 = Can I stop a specific page from advertising its Markdown file? =
-Yes. Use the **Do not advertise Markdown or llms.txt from this page** option in the WordPress editor or on the BlogLogistics > Markdown for Agents admin screen.
+Yes. Use the **Do not advertise Markdown or llms.txt from this page** option in the WordPress editor, or use the Discovery controls in the separate Pages and Posts tabs under BlogLogistics > Markdown for Agents.
 
 = Where is the Markdown URL stored? =
 The URL is stored in the WordPress custom field `bloglogistics_markdown_url`. The custom field is registered for posts and pages and is intentionally not hidden.
@@ -147,6 +148,19 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.4.0 =
+* Reorganize the administrator interface into Overview, Pages, Posts, llms.txt, and Server & .htaccess tabs.
+* Separate Pages and Posts instead of mixing both content types in the same health and companion tables.
+* Replace the duplicate Content Health and Detected Markdown Companions sections with one consolidated management table per content type.
+* Add linked Markdown Health Dashboard cards that lead directly to relevant Pages, Posts, llms.txt, or server views.
+* Add consistent status states and colours: Healthy (green), Problem (red), Review (yellow), and Not applicable (light grey).
+* Add Pages and Posts filters for Needs attention, Missing, Stale, Encoding, Live issues, and Disabled.
+* Add Edit, View Page, View Markdown, and single-item Verify row actions.
+* Preserve the active tab and filter after scans, live verification, bulk actions, discovery changes, .htaccess actions, and backup cleanup.
+* Move llms.txt validation into a dedicated tab and store same-site Markdown reference details for the new reference-health table.
+* Move server diagnostics, .htaccess rule management, and backup management into a dedicated technical tab.
+* Keep the existing administrator-driven validation architecture and add no new filesystem or HTTP work to normal public page loads.
 
 = 2.3.1 =
 * Add automatic Apache-compatible Markdown MIME configuration using `AddType text/markdown .md` and `AddCharset UTF-8 .md`.
