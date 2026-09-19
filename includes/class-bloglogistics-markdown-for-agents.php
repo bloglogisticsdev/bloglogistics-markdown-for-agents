@@ -22,6 +22,7 @@ final class BL_Markdown_For_Agents {
     private const VALIDATION_MAX_BYTES = 2097152;
     private const LIVE_VERIFY_LIMIT = 75;
     private const BACKUP_RETAIN_COUNT = 3;
+    private const PER_PAGE_USER_META = 'bloglogistics_mfa_items_per_page';
 
     public static function init(): void {
         self::load_textdomain();
@@ -2546,6 +2547,30 @@ final class BL_Markdown_For_Agents {
         return in_array( $view, [ 'all', 'attention', 'missing', 'stale', 'encoding', 'live', 'discovery', 'disabled' ], true ) ? $view : 'all';
     }
 
+    /**
+     * Current administrator list size for Pages/Posts. A small fixed set keeps
+     * the UI predictable and prevents accidental enormous admin tables.
+     */
+    private static function settings_per_page(): int {
+        $allowed   = [ 20, 50, 100 ];
+        $requested = isset( $_GET['mfa_per_page'] ) ? absint( wp_unslash( $_GET['mfa_per_page'] ) ) : 0;
+
+        if ( in_array( $requested, $allowed, true ) ) {
+            if ( get_current_user_id() ) {
+                update_user_meta( get_current_user_id(), self::PER_PAGE_USER_META, $requested );
+            }
+            return $requested;
+        }
+
+        $stored = get_current_user_id() ? absint( get_user_meta( get_current_user_id(), self::PER_PAGE_USER_META, true ) ) : 0;
+
+        return in_array( $stored, $allowed, true ) ? $stored : 20;
+    }
+
+    private static function settings_paged(): int {
+        return max( 1, isset( $_GET['paged'] ) ? absint( wp_unslash( $_GET['paged'] ) ) : 1 );
+    }
+
     private static function settings_url( string $tab = 'overview', string $view = 'all', array $extra = [] ): string {
         $args = array_merge(
             [
@@ -2557,21 +2582,28 @@ final class BL_Markdown_For_Agents {
 
         if ( in_array( $tab, [ 'pages', 'posts' ], true ) ) {
             $args['view'] = $view;
+            if ( ! array_key_exists( 'mfa_per_page', $args ) ) {
+                $args['mfa_per_page'] = self::settings_per_page();
+            }
         }
 
         return add_query_arg( $args, admin_url( 'admin.php' ) );
     }
 
     /**
-     * Preserve the administrator's current tab/filter after an action.
+     * Preserve the administrator's current tab/filter/pagination after an action.
      *
-     * @return array{tab:string,view:string}
+     * @return array{tab:string,view:string,paged:int,per_page:int}
      */
     private static function return_context( string $default_tab = 'overview', string $default_view = 'all' ): array {
-        $tab_source  = isset( $_POST['return_tab'] ) ? wp_unslash( $_POST['return_tab'] ) : ( isset( $_GET['return_tab'] ) ? wp_unslash( $_GET['return_tab'] ) : $default_tab );
-        $view_source = isset( $_POST['return_view'] ) ? wp_unslash( $_POST['return_view'] ) : ( isset( $_GET['return_view'] ) ? wp_unslash( $_GET['return_view'] ) : $default_view );
-        $tab         = sanitize_key( (string) $tab_source );
-        $view        = sanitize_key( (string) $view_source );
+        $tab_source      = isset( $_POST['return_tab'] ) ? wp_unslash( $_POST['return_tab'] ) : ( isset( $_GET['return_tab'] ) ? wp_unslash( $_GET['return_tab'] ) : $default_tab );
+        $view_source     = isset( $_POST['return_view'] ) ? wp_unslash( $_POST['return_view'] ) : ( isset( $_GET['return_view'] ) ? wp_unslash( $_GET['return_view'] ) : $default_view );
+        $paged_source    = isset( $_POST['return_paged'] ) ? wp_unslash( $_POST['return_paged'] ) : ( isset( $_GET['return_paged'] ) ? wp_unslash( $_GET['return_paged'] ) : 1 );
+        $per_page_source = isset( $_POST['return_per_page'] ) ? wp_unslash( $_POST['return_per_page'] ) : ( isset( $_GET['return_per_page'] ) ? wp_unslash( $_GET['return_per_page'] ) : self::settings_per_page() );
+        $tab             = sanitize_key( (string) $tab_source );
+        $view            = sanitize_key( (string) $view_source );
+        $paged           = max( 1, absint( $paged_source ) );
+        $per_page        = absint( $per_page_source );
 
         if ( ! in_array( $tab, [ 'overview', 'pages', 'posts', 'llms', 'server' ], true ) ) {
             $tab = $default_tab;
@@ -2581,10 +2613,39 @@ final class BL_Markdown_For_Agents {
             $view = $default_view;
         }
 
+        if ( ! in_array( $per_page, [ 20, 50, 100 ], true ) ) {
+            $per_page = 20;
+        }
+
         return [
+            'tab'      => $tab,
+            'view'     => $view,
+            'paged'    => $paged,
+            'per_page' => $per_page,
+        ];
+    }
+
+    /**
+     * Query arguments needed to return to the same Pages/Posts list position.
+     *
+     * @param array{tab:string,view:string,paged?:int,per_page?:int} $context Context.
+     * @return array<string,int|string>
+     */
+    private static function context_query_args( array $context ): array {
+        $tab  = isset( $context['tab'] ) ? sanitize_key( (string) $context['tab'] ) : 'overview';
+        $view = isset( $context['view'] ) ? sanitize_key( (string) $context['view'] ) : 'all';
+        $args = [
             'tab'  => $tab,
             'view' => $view,
         ];
+
+        if ( in_array( $tab, [ 'pages', 'posts' ], true ) ) {
+            $per_page = isset( $context['per_page'] ) ? absint( $context['per_page'] ) : 20;
+            $args['paged']        = max( 1, isset( $context['paged'] ) ? absint( $context['paged'] ) : 1 );
+            $args['mfa_per_page'] = in_array( $per_page, [ 20, 50, 100 ], true ) ? $per_page : 20;
+        }
+
+        return $args;
     }
 
     /**
@@ -2600,7 +2661,7 @@ final class BL_Markdown_For_Agents {
      * detected companions, subject to the normal per-run limit.
      *
      * @param array<int,int> $ids Selected post IDs, or an empty array for all.
-     * @param array{tab:string,view:string} $context Return location.
+     * @param array{tab:string,view:string,paged?:int,per_page?:int} $context Return location.
      */
     private static function schedule_browser_verification( array $ids, array $context ): void {
         $ids = array_values( array_unique( array_filter( array_map( 'absint', $ids ) ) ) );
@@ -2611,8 +2672,10 @@ final class BL_Markdown_For_Agents {
                 'requested_ids' => $ids,
                 'scope'         => $ids ? 'selected' : 'all',
                 'context'       => [
-                    'tab'  => isset( $context['tab'] ) ? sanitize_key( (string) $context['tab'] ) : 'overview',
-                    'view' => isset( $context['view'] ) ? sanitize_key( (string) $context['view'] ) : 'all',
+                    'tab'      => isset( $context['tab'] ) ? sanitize_key( (string) $context['tab'] ) : 'overview',
+                    'view'     => isset( $context['view'] ) ? sanitize_key( (string) $context['view'] ) : 'all',
+                    'paged'    => max( 1, isset( $context['paged'] ) ? absint( $context['paged'] ) : 1 ),
+                    'per_page' => isset( $context['per_page'] ) && in_array( absint( $context['per_page'] ), [ 20, 50, 100 ], true ) ? absint( $context['per_page'] ) : 20,
                 ],
                 'created_at'    => time(),
             ],
@@ -3009,6 +3072,10 @@ final class BL_Markdown_For_Agents {
         echo '<input type="hidden" name="action" value="bloglogistics_mfa_scan">';
         echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
         echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        if ( in_array( $tab, [ 'pages', 'posts' ], true ) ) {
+            echo '<input type="hidden" name="return_paged" value="' . esc_attr( (string) self::settings_paged() ) . '">';
+            echo '<input type="hidden" name="return_per_page" value="' . esc_attr( (string) self::settings_per_page() ) . '">';
+        }
         submit_button( __( 'Scan Changes and Refresh Health', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
         echo ' <button type="submit" class="button" name="force_full_scan" value="1">' . esc_html__( 'Force Full Rescan', 'bloglogistics-markdown-for-agents' ) . '</button>';
         echo '</form>';
@@ -3018,6 +3085,10 @@ final class BL_Markdown_For_Agents {
         echo '<input type="hidden" name="action" value="bloglogistics_mfa_live_verify">';
         echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
         echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        if ( in_array( $tab, [ 'pages', 'posts' ], true ) ) {
+            echo '<input type="hidden" name="return_paged" value="' . esc_attr( (string) self::settings_paged() ) . '">';
+            echo '<input type="hidden" name="return_per_page" value="' . esc_attr( (string) self::settings_per_page() ) . '">';
+        }
         submit_button( __( 'Run Live Endpoint Verification', 'bloglogistics-markdown-for-agents' ), 'secondary', 'submit', false );
         echo '</form>';
         echo '</div>';
@@ -3198,15 +3269,85 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
+     * Render WordPress-style pagination and the per-page selector used by the
+     * Pages and Posts lists.
+     */
+    private static function render_content_pagination( string $post_type, string $tab, string $view, int $paged, int $per_page, int $total_items, bool $show_per_page = true ): void {
+        $total_pages = max( 1, (int) ceil( $total_items / max( 1, $per_page ) ) );
+        $paged       = min( max( 1, $paged ), $total_pages );
+        $type_label  = 'page' === $post_type
+            ? sprintf( _n( '%s page', '%s pages', $total_items, 'bloglogistics-markdown-for-agents' ), number_format_i18n( $total_items ) )
+            : sprintf( _n( '%s post', '%s posts', $total_items, 'bloglogistics-markdown-for-agents' ), number_format_i18n( $total_items ) );
+
+        echo '<div class="tablenav bl-mfa-pagination-nav">';
+
+        if ( $show_per_page ) {
+            echo '<div class="alignleft actions bl-mfa-per-page">';
+            echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '">';
+            echo '<input type="hidden" name="page" value="' . esc_attr( self::SETTINGS_SLUG ) . '">';
+            echo '<input type="hidden" name="tab" value="' . esc_attr( $tab ) . '">';
+            echo '<input type="hidden" name="view" value="' . esc_attr( $view ) . '">';
+            echo '<input type="hidden" name="paged" value="1">';
+            echo '<label for="bl-mfa-per-page-' . esc_attr( $tab ) . '">' . esc_html__( 'Items per page', 'bloglogistics-markdown-for-agents' ) . '</label> ';
+            echo '<select id="bl-mfa-per-page-' . esc_attr( $tab ) . '" name="mfa_per_page">';
+            foreach ( [ 20, 50, 100 ] as $option ) {
+                echo '<option value="' . esc_attr( (string) $option ) . '"' . selected( $per_page, $option, false ) . '>' . esc_html( (string) $option ) . '</option>';
+            }
+            echo '</select> ';
+            echo '<button type="submit" class="button">' . esc_html__( 'Apply', 'bloglogistics-markdown-for-agents' ) . '</button>';
+            echo '</form>';
+            echo '</div>';
+        }
+
+        echo '<div class="tablenav-pages">';
+        echo '<span class="displaying-num">' . esc_html( $type_label ) . '</span>';
+
+        if ( $total_pages > 1 ) {
+            $first_url = self::settings_url( $tab, $view, [ 'paged' => 1, 'mfa_per_page' => $per_page ] );
+            $prev_url  = self::settings_url( $tab, $view, [ 'paged' => max( 1, $paged - 1 ), 'mfa_per_page' => $per_page ] );
+            $next_url  = self::settings_url( $tab, $view, [ 'paged' => min( $total_pages, $paged + 1 ), 'mfa_per_page' => $per_page ] );
+            $last_url  = self::settings_url( $tab, $view, [ 'paged' => $total_pages, 'mfa_per_page' => $per_page ] );
+
+            echo '<span class="pagination-links">';
+            if ( $paged > 1 ) {
+                echo '<a class="first-page button" href="' . esc_url( $first_url ) . '"><span class="screen-reader-text">' . esc_html__( 'First page', 'bloglogistics-markdown-for-agents' ) . '</span><span aria-hidden="true">«</span></a>';
+                echo '<a class="prev-page button" href="' . esc_url( $prev_url ) . '"><span class="screen-reader-text">' . esc_html__( 'Previous page', 'bloglogistics-markdown-for-agents' ) . '</span><span aria-hidden="true">‹</span></a>';
+            } else {
+                echo '<span class="tablenav-pages-navspan button disabled" aria-hidden="true">«</span>';
+                echo '<span class="tablenav-pages-navspan button disabled" aria-hidden="true">‹</span>';
+            }
+
+            echo '<span class="paging-input"><span class="tablenav-paging-text">' . sprintf(
+                esc_html__( '%1$s of %2$s', 'bloglogistics-markdown-for-agents' ),
+                '<span class="current-page">' . esc_html( number_format_i18n( $paged ) ) . '</span>',
+                '<span class="total-pages">' . esc_html( number_format_i18n( $total_pages ) ) . '</span>'
+            ) . '</span></span>';
+
+            if ( $paged < $total_pages ) {
+                echo '<a class="next-page button" href="' . esc_url( $next_url ) . '"><span class="screen-reader-text">' . esc_html__( 'Next page', 'bloglogistics-markdown-for-agents' ) . '</span><span aria-hidden="true">›</span></a>';
+                echo '<a class="last-page button" href="' . esc_url( $last_url ) . '"><span class="screen-reader-text">' . esc_html__( 'Last page', 'bloglogistics-markdown-for-agents' ) . '</span><span aria-hidden="true">»</span></a>';
+            } else {
+                echo '<span class="tablenav-pages-navspan button disabled" aria-hidden="true">›</span>';
+                echo '<span class="tablenav-pages-navspan button disabled" aria-hidden="true">»</span>';
+            }
+            echo '</span>';
+        }
+
+        echo '</div><br class="clear"></div>';
+    }
+
+    /**
      * Render either the Pages or Posts management tab.
      *
      * @param array<string,mixed> $health      Saved health snapshot.
      * @param array<int,mixed>    $live_items  Saved live results.
      */
     private static function render_content_tab( string $post_type, string $tab, string $view, array $health, array $live_items ): void {
-        $ids    = self::published_ids_by_type( $post_type );
-        $items  = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
-        $counts = self::content_filter_counts( $ids, $health, $live_items );
+        $ids      = self::published_ids_by_type( $post_type );
+        $items    = isset( $health['items'] ) && is_array( $health['items'] ) ? $health['items'] : [];
+        $counts   = self::content_filter_counts( $ids, $health, $live_items );
+        $per_page = self::settings_per_page();
+        $paged    = self::settings_paged();
         $labels = [
             'all'       => __( 'All', 'bloglogistics-markdown-for-agents' ),
             'attention' => __( 'Needs attention', 'bloglogistics-markdown-for-agents' ),
@@ -3228,15 +3369,22 @@ final class BL_Markdown_For_Agents {
             }
         }
 
+        $total_visible = count( $visible_ids );
+        $total_pages   = max( 1, (int) ceil( $total_visible / max( 1, $per_page ) ) );
+        $paged         = min( $paged, $total_pages );
+        $offset        = ( $paged - 1 ) * $per_page;
+        $page_ids      = array_slice( $visible_ids, $offset, $per_page );
+
         echo '<h2>' . esc_html( 'page' === $post_type ? __( 'Pages', 'bloglogistics-markdown-for-agents' ) : __( 'Posts', 'bloglogistics-markdown-for-agents' ) ) . '</h2>';
         echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. Markdown File tells you whether the curated /index.md file exists. Live Delivery uses your administrator browser to check whether the public HTML page and Markdown file load correctly and whether Markdown is served with the expected MIME type.', 'bloglogistics-markdown-for-agents' ) . '</p>';
         echo '<p class="description">' . esc_html__( 'Discovery is a separate check of the HTML <head>: it confirms whether the page advertises its Markdown file and llms.txt using discovery links. A Markdown file can be perfectly reachable even when discovery markup is missing or stale in cached HTML.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p class="description">' . esc_html__( 'Large lists are paginated. Choose 20, 50, or 100 items per page; your choice is remembered for your administrator account.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         echo '<ul class="subsubsub bl-mfa-filters">';
         $parts = [];
         foreach ( $labels as $key => $label ) {
             $class   = $view === $key ? ' class="current" aria-current="page"' : '';
-            $parts[] = '<li><a' . $class . ' href="' . esc_url( self::settings_url( $tab, $key ) ) . '">' . esc_html( $label ) . ' <span class="count">(' . esc_html( number_format_i18n( $counts[ $key ] ) ) . ')</span></a></li>';
+            $parts[] = '<li><a' . $class . ' href="' . esc_url( self::settings_url( $tab, $key, [ 'paged' => 1, 'mfa_per_page' => $per_page ] ) ) . '">' . esc_html( $label ) . ' <span class="count">(' . esc_html( number_format_i18n( $counts[ $key ] ) ) . ')</span></a></li>';
         }
         echo implode( ' | ', $parts );
         echo '</ul><div class="clear"></div>';
@@ -3248,17 +3396,27 @@ final class BL_Markdown_For_Agents {
             return;
         }
 
+        if ( ! $visible_ids ) {
+            self::render_content_pagination( $post_type, $tab, $view, 1, $per_page, 0, true );
+            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'No items match this filter.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
+            return;
+        }
+
+        self::render_content_pagination( $post_type, $tab, $view, $paged, $per_page, $total_visible, true );
+
         echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
         wp_nonce_field( 'bloglogistics_mfa_save_exclusions' );
         echo '<input type="hidden" name="action" value="bloglogistics_mfa_save_exclusions">';
         echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
         echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        echo '<input type="hidden" name="return_paged" value="' . esc_attr( (string) $paged ) . '">';
+        echo '<input type="hidden" name="return_per_page" value="' . esc_attr( (string) $per_page ) . '">';
 
-        foreach ( $ids as $post_id ) {
+        // Only the rows on the current page are managed by this form. This is
+        // important with pagination: saving page 2 must never alter discovery
+        // choices on page 1 or page 3.
+        foreach ( $page_ids as $post_id ) {
             echo '<input type="hidden" name="managed_ids[]" value="' . esc_attr( (string) $post_id ) . '">';
-            if ( ! in_array( $post_id, $visible_ids, true ) && self::is_discovery_disabled( (int) $post_id ) ) {
-                echo '<input type="hidden" name="disabled_ids[]" value="' . esc_attr( (string) $post_id ) . '">';
-            }
         }
 
         echo '<div class="bl-mfa-actions"><select name="bulk_action">';
@@ -3268,12 +3426,6 @@ final class BL_Markdown_For_Agents {
         echo '<option value="rescan">' . esc_html__( 'Force revalidate selected', 'bloglogistics-markdown-for-agents' ) . '</option>';
         echo '<option value="verify">' . esc_html__( 'Live verify selected', 'bloglogistics-markdown-for-agents' ) . '</option>';
         echo '</select><button type="submit" class="button" name="apply_bulk" value="1">' . esc_html__( 'Apply', 'bloglogistics-markdown-for-agents' ) . '</button></div>';
-
-        if ( ! $visible_ids ) {
-            echo '<div class="notice notice-info inline"><p>' . esc_html__( 'No items match this filter.', 'bloglogistics-markdown-for-agents' ) . '</p></div>';
-            echo '</form>';
-            return;
-        }
 
         echo '<div class="bl-mfa-table-wrap"><table class="widefat striped bl-mfa-health-table"><thead><tr>';
         echo '<td class="check-column"><input type="checkbox" class="bl-mfa-select-all" aria-label="' . esc_attr__( 'Select all visible items', 'bloglogistics-markdown-for-agents' ) . '"></td>';
@@ -3285,7 +3437,7 @@ final class BL_Markdown_For_Agents {
         echo '<th>' . esc_html__( 'Discovery', 'bloglogistics-markdown-for-agents' ) . '</th>';
         echo '</tr></thead><tbody>';
 
-        foreach ( $visible_ids as $post_id ) {
+        foreach ( $page_ids as $post_id ) {
             $item      = isset( $items[ $post_id ] ) && is_array( $items[ $post_id ] ) ? $items[ $post_id ] : [];
             $live_item = isset( $live_items[ $post_id ] ) && is_array( $live_items[ $post_id ] ) ? $live_items[ $post_id ] : [];
             $state     = self::content_item_state( $post_id, $item, $live_item );
@@ -3295,8 +3447,10 @@ final class BL_Markdown_For_Agents {
                 $tab,
                 $view,
                 [
-                    'edit_file' => 'markdown',
-                    'post_id'   => $post_id,
+                    'edit_file'    => 'markdown',
+                    'post_id'      => $post_id,
+                    'paged'        => $paged,
+                    'mfa_per_page' => $per_page,
                 ]
             );
             $verify_url = wp_nonce_url(
@@ -3304,8 +3458,10 @@ final class BL_Markdown_For_Agents {
                     [
                         'action'      => 'bloglogistics_mfa_verify_item',
                         'post_id'     => $post_id,
-                        'return_tab'  => $tab,
-                        'return_view' => $view,
+                        'return_tab'      => $tab,
+                        'return_view'     => $view,
+                        'return_paged'    => $paged,
+                        'return_per_page' => $per_page,
                     ],
                     admin_url( 'admin-post.php' )
                 ),
@@ -3465,6 +3621,7 @@ final class BL_Markdown_For_Agents {
         echo '</tbody></table></div>';
         submit_button( __( 'Save Discovery Choices', 'bloglogistics-markdown-for-agents' ) );
         echo '</form>';
+        self::render_content_pagination( $post_type, $tab, $view, $paged, $per_page, $total_visible, false );
     }
 
     /**
@@ -3679,11 +3836,16 @@ final class BL_Markdown_For_Agents {
      * never creates missing curated files.
      */
     private static function render_text_editor( string $type, int $post_id, string $tab, string $view ): void {
-        $target = self::editable_text_target( $type, $post_id );
+        $target   = self::editable_text_target( $type, $post_id );
+        $paged    = self::settings_paged();
+        $per_page = self::settings_per_page();
+        $back_extra = in_array( $tab, [ 'pages', 'posts' ], true )
+            ? [ 'paged' => $paged, 'mfa_per_page' => $per_page ]
+            : [];
 
         if ( is_wp_error( $target ) ) {
             echo '<div class="notice notice-error inline"><p>' . esc_html( $target->get_error_message() ) . '</p></div>';
-            echo '<p><a class="button" href="' . esc_url( self::settings_url( $tab, $view ) ) . '">' . esc_html__( 'Back', 'bloglogistics-markdown-for-agents' ) . '</a></p>';
+            echo '<p><a class="button" href="' . esc_url( self::settings_url( $tab, $view, $back_extra ) ) . '">' . esc_html__( 'Back', 'bloglogistics-markdown-for-agents' ) . '</a></p>';
             return;
         }
 
@@ -3732,6 +3894,10 @@ final class BL_Markdown_For_Agents {
         echo '<input type="hidden" name="original_hash" value="' . esc_attr( hash( 'sha256', @file_get_contents( $file ) ?: '' ) ) . '">';
         echo '<input type="hidden" name="return_tab" value="' . esc_attr( $tab ) . '">';
         echo '<input type="hidden" name="return_view" value="' . esc_attr( $view ) . '">';
+        if ( in_array( $tab, [ 'pages', 'posts' ], true ) ) {
+            echo '<input type="hidden" name="return_paged" value="' . esc_attr( (string) $paged ) . '">';
+            echo '<input type="hidden" name="return_per_page" value="' . esc_attr( (string) $per_page ) . '">';
+        }
         echo '<label class="screen-reader-text" for="bl-mfa-text-editor">' . esc_html__( 'Text file contents', 'bloglogistics-markdown-for-agents' ) . '</label>';
         echo '<textarea id="bl-mfa-text-editor" class="large-text code bl-mfa-text-editor" name="file_contents" rows="30" spellcheck="false"' . disabled( $writable, false, false ) . '>' . esc_textarea( $contents ) . '</textarea>';
 
@@ -3739,7 +3905,7 @@ final class BL_Markdown_For_Agents {
         if ( $writable ) {
             submit_button( 'llms' === $type ? __( 'Save llms.txt', 'bloglogistics-markdown-for-agents' ) : __( 'Save Markdown', 'bloglogistics-markdown-for-agents' ), 'primary', 'submit', false );
         }
-        echo ' <a class="button" href="' . esc_url( self::settings_url( $tab, $view ) ) . '">' . esc_html__( 'Cancel', 'bloglogistics-markdown-for-agents' ) . '</a>';
+        echo ' <a class="button" href="' . esc_url( self::settings_url( $tab, $view, $back_extra ) ) . '">' . esc_html__( 'Cancel', 'bloglogistics-markdown-for-agents' ) . '</a>';
         $view_file_label = 'llms' === $type ? __( 'View llms.txt', 'bloglogistics-markdown-for-agents' ) : __( 'View Markdown', 'bloglogistics-markdown-for-agents' );
         echo ' <a class="button" href="' . esc_url( (string) $target['public_url'] ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $view_file_label ) . '</a>';
         echo '</div>';
@@ -3791,9 +3957,13 @@ final class BL_Markdown_For_Agents {
         self::scan_markdown_files( false );
 
         $extra = [
-            'edit_file'                  => $type,
-            'bloglogistics_mfa_message'  => 'file_saved',
+            'edit_file'                 => $type,
+            'bloglogistics_mfa_message' => 'file_saved',
         ];
+        if ( in_array( $context['tab'], [ 'pages', 'posts' ], true ) ) {
+            $extra['paged']        = $context['paged'];
+            $extra['mfa_per_page'] = $context['per_page'];
+        }
         if ( 'markdown' === $type ) {
             $extra['post_id'] = $post_id;
         }
@@ -3826,7 +3996,7 @@ final class BL_Markdown_For_Agents {
         echo '<div class="wrap bl-mfa-wrap">';
         echo '<h1>' . esc_html__( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ) . '</h1>';
         echo '<style>
-            .bl-mfa-wrap{max-width:1400px}.bl-mfa-tabs{margin-bottom:18px}.bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:12px 0 20px;max-width:1250px}.bl-mfa-health-card{display:block;box-sizing:border-box;background:#fff;border:1px solid #c3c4c7;border-left-width:4px;border-radius:4px;padding:14px 16px;min-height:116px;text-decoration:none;color:#1d2327}.bl-mfa-health-card:hover{color:#1d2327;box-shadow:0 1px 4px rgba(0,0,0,.12)}.bl-mfa-health-card strong{display:block;font-size:26px;line-height:1.15;margin:5px 0}.bl-mfa-card-label{display:block;font-weight:600}.bl-mfa-card-detail{display:block;color:#50575e;margin-top:4px}.bl-mfa-card-links{display:block;margin-top:8px}.bl-mfa-card-links a{font-weight:600}.bl-mfa-card-healthy{border-left-color:#00a32a;background:#edfaef}.bl-mfa-card-problem{border-left-color:#d63638;background:#fcf0f1}.bl-mfa-card-review{border-left-color:#dba617;background:#fcf9e8}.bl-mfa-card-na{border-left-color:#c3c4c7;background:#f0f0f1}.bl-mfa-status{display:inline-block;border:1px solid transparent;border-radius:999px;padding:2px 8px;font-weight:600;line-height:1.5}.bl-mfa-status-healthy{background:#edfaef;border-color:#00a32a;color:#006b1b}.bl-mfa-status-problem{background:#fcf0f1;border-color:#d63638;color:#8a2424}.bl-mfa-status-review{background:#fcf9e8;border-color:#dba617;color:#755c00}.bl-mfa-status-na{background:#f0f0f1;border-color:#c3c4c7;color:#50575e}.bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}.bl-mfa-health-detail{display:block;color:#646970;margin-top:4px;line-height:1.4}.bl-mfa-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.bl-mfa-actions form{margin:0}.bl-mfa-primary-actions{padding:10px 0}.bl-mfa-code-wrap{word-break:break-word}.bl-mfa-table-wrap{overflow-x:auto}.bl-mfa-filters{margin:8px 0 6px}.bl-mfa-discovery-toggle{display:block;margin-top:8px;color:#50575e}.bl-mfa-overview-meta{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 12px;color:#50575e}.bl-mfa-status-key{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 14px}.bl-mfa-status-key strong{margin-right:2px}.bl-mfa-issue-list{list-style:disc;margin-left:2em}.bl-mfa-how-it-works{max-width:900px}.bl-mfa-health-table .row-actions{position:static}.bl-mfa-health-table code{font-size:12px}.bl-mfa-editor-wrap{max-width:1050px}.bl-mfa-text-editor{width:100%;min-height:560px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:13px;line-height:1.55;white-space:pre;tab-size:4}.bl-mfa-editor-meta{display:flex;gap:24px;flex-wrap:wrap;color:#50575e;margin:8px 0 14px}.bl-mfa-editor-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 22px}.bl-mfa-editor-actions .button{margin:0}.bl-mfa-markdown-help{max-width:760px;background:#fff;border:1px solid #c3c4c7;border-left:4px solid #72aee6;padding:14px 18px;margin-top:18px}.bl-mfa-markdown-help h3{margin-top:0}.bl-mfa-markdown-help pre{background:#f6f7f7;border:1px solid #dcdcde;padding:12px;overflow:auto}.bl-mfa-file-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}@media(max-width:782px){.bl-mfa-health-grid{grid-template-columns:1fr}.bl-mfa-overview-meta{display:block}.bl-mfa-overview-meta span{display:block;margin-bottom:5px}.bl-mfa-editor-meta{display:block}.bl-mfa-editor-meta span{display:block;margin-bottom:5px}}
+            .bl-mfa-wrap{max-width:1400px}.bl-mfa-tabs{margin-bottom:18px}.bl-mfa-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:12px 0 20px;max-width:1250px}.bl-mfa-health-card{display:block;box-sizing:border-box;background:#fff;border:1px solid #c3c4c7;border-left-width:4px;border-radius:4px;padding:14px 16px;min-height:116px;text-decoration:none;color:#1d2327}.bl-mfa-health-card:hover{color:#1d2327;box-shadow:0 1px 4px rgba(0,0,0,.12)}.bl-mfa-health-card strong{display:block;font-size:26px;line-height:1.15;margin:5px 0}.bl-mfa-card-label{display:block;font-weight:600}.bl-mfa-card-detail{display:block;color:#50575e;margin-top:4px}.bl-mfa-card-links{display:block;margin-top:8px}.bl-mfa-card-links a{font-weight:600}.bl-mfa-card-healthy{border-left-color:#00a32a;background:#edfaef}.bl-mfa-card-problem{border-left-color:#d63638;background:#fcf0f1}.bl-mfa-card-review{border-left-color:#dba617;background:#fcf9e8}.bl-mfa-card-na{border-left-color:#c3c4c7;background:#f0f0f1}.bl-mfa-status{display:inline-block;border:1px solid transparent;border-radius:999px;padding:2px 8px;font-weight:600;line-height:1.5}.bl-mfa-status-healthy{background:#edfaef;border-color:#00a32a;color:#006b1b}.bl-mfa-status-problem{background:#fcf0f1;border-color:#d63638;color:#8a2424}.bl-mfa-status-review{background:#fcf9e8;border-color:#dba617;color:#755c00}.bl-mfa-status-na{background:#f0f0f1;border-color:#c3c4c7;color:#50575e}.bl-mfa-health-table td,.bl-mfa-health-table th{vertical-align:top}.bl-mfa-health-detail{display:block;color:#646970;margin-top:4px;line-height:1.4}.bl-mfa-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.bl-mfa-actions form{margin:0}.bl-mfa-primary-actions{padding:10px 0}.bl-mfa-code-wrap{word-break:break-word}.bl-mfa-table-wrap{overflow-x:auto}.bl-mfa-filters{margin:8px 0 6px}.bl-mfa-discovery-toggle{display:block;margin-top:8px;color:#50575e}.bl-mfa-overview-meta{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 12px;color:#50575e}.bl-mfa-status-key{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0 14px}.bl-mfa-status-key strong{margin-right:2px}.bl-mfa-issue-list{list-style:disc;margin-left:2em}.bl-mfa-how-it-works{max-width:900px}.bl-mfa-health-table .row-actions{position:static}.bl-mfa-health-table code{font-size:12px}.bl-mfa-editor-wrap{max-width:1050px}.bl-mfa-text-editor{width:100%;min-height:560px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:13px;line-height:1.55;white-space:pre;tab-size:4}.bl-mfa-editor-meta{display:flex;gap:24px;flex-wrap:wrap;color:#50575e;margin:8px 0 14px}.bl-mfa-editor-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 22px}.bl-mfa-editor-actions .button{margin:0}.bl-mfa-markdown-help{max-width:760px;background:#fff;border:1px solid #c3c4c7;border-left:4px solid #72aee6;padding:14px 18px;margin-top:18px}.bl-mfa-markdown-help h3{margin-top:0}.bl-mfa-markdown-help pre{background:#f6f7f7;border:1px solid #dcdcde;padding:12px;overflow:auto}.bl-mfa-file-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}.bl-mfa-pagination-nav{margin:8px 0}.bl-mfa-per-page form{display:flex;align-items:center;gap:6px}.bl-mfa-per-page label{font-weight:600}.bl-mfa-pagination-nav .tablenav-pages{margin:0 0 0 auto}@media(max-width:782px){.bl-mfa-health-grid{grid-template-columns:1fr}.bl-mfa-overview-meta{display:block}.bl-mfa-overview-meta span{display:block;margin-bottom:5px}.bl-mfa-editor-meta{display:block}.bl-mfa-editor-meta span{display:block;margin-bottom:5px}}
         </style>';
 
         echo '<div class="notice notice-info inline"><p><strong>' . esc_html__( 'Editorial control stays with you.', 'bloglogistics-markdown-for-agents' ) . '</strong> ';
@@ -3946,10 +4116,10 @@ final class BL_Markdown_For_Agents {
 
         wp_safe_redirect(
             add_query_arg(
-                [
-                    'page'                      => self::SETTINGS_SLUG,
-                    'tab'                       => $context['tab'],
-                    'view'                      => $context['view'],
+                array_merge(
+                    [ 'page' => self::SETTINGS_SLUG ],
+                    self::context_query_args( $context ),
+                    [
                     'bloglogistics_mfa_message' => 'scanned',
                     'checked'                   => $result['checked'],
                     'found'                     => $result['found'],
@@ -3957,7 +4127,8 @@ final class BL_Markdown_For_Agents {
                     'validated'                 => $result['validated'],
                     'reused'                    => $result['reused'],
                     'force'                     => $force ? 1 : 0,
-                ],
+                    ]
+                ),
                 admin_url( 'admin.php' )
             )
         );
@@ -4349,11 +4520,17 @@ final class BL_Markdown_For_Agents {
             $view = 'all';
         }
 
+        $redirect_context = [
+            'tab'      => $tab,
+            'view'     => $view,
+            'paged'    => isset( $context['paged'] ) ? absint( $context['paged'] ) : 1,
+            'per_page' => isset( $context['per_page'] ) ? absint( $context['per_page'] ) : 20,
+        ];
         $redirect = add_query_arg(
-            [
-                'page'                      => self::SETTINGS_SLUG,
-                'tab'                       => $tab,
-                'view'                      => $view,
+            array_merge(
+                [ 'page' => self::SETTINGS_SLUG ],
+                self::context_query_args( $redirect_context ),
+                [
                 'bloglogistics_mfa_message' => 'live_verified',
                 'checked'                   => $checked,
                 'passed'                    => $passed,
@@ -4361,7 +4538,8 @@ final class BL_Markdown_For_Agents {
                 'failed'                    => $failed,
                 'inconclusive'              => $inconclusive,
                 'truncated'                 => ! empty( $request['truncated'] ) ? 1 : 0,
-            ],
+                ]
+            ),
             admin_url( 'admin.php' )
         );
 
@@ -4388,12 +4566,11 @@ final class BL_Markdown_For_Agents {
 
         wp_safe_redirect(
             add_query_arg(
-                [
-                    'page'           => self::SETTINGS_SLUG,
-                    'tab'            => $context['tab'],
-                    'view'           => $context['view'],
-                    'browser_verify' => 1,
-                ],
+                array_merge(
+                    [ 'page' => self::SETTINGS_SLUG ],
+                    self::context_query_args( $context ),
+                    [ 'browser_verify' => 1 ]
+                ),
                 admin_url( 'admin.php' )
             )
         );
@@ -4418,12 +4595,11 @@ final class BL_Markdown_For_Agents {
 
         wp_safe_redirect(
             add_query_arg(
-                [
-                    'page'           => self::SETTINGS_SLUG,
-                    'tab'            => $context['tab'],
-                    'view'           => $context['view'],
-                    'browser_verify' => 1,
-                ],
+                array_merge(
+                    [ 'page' => self::SETTINGS_SLUG ],
+                    self::context_query_args( $context ),
+                    [ 'browser_verify' => 1 ]
+                ),
                 admin_url( 'admin.php' )
             )
         );
@@ -4544,12 +4720,11 @@ final class BL_Markdown_For_Agents {
 
             wp_safe_redirect(
                 add_query_arg(
-                    [
-                        'page'           => self::SETTINGS_SLUG,
-                        'tab'            => $context['tab'],
-                        'view'           => $context['view'],
-                        'browser_verify' => 1,
-                    ],
+                    array_merge(
+                        [ 'page' => self::SETTINGS_SLUG ],
+                        self::context_query_args( $context ),
+                        [ 'browser_verify' => 1 ]
+                    ),
                     admin_url( 'admin.php' )
                 )
             );
@@ -4562,14 +4737,15 @@ final class BL_Markdown_For_Agents {
 
         wp_safe_redirect(
             add_query_arg(
-                [
-                    'page'                      => self::SETTINGS_SLUG,
-                    'tab'                       => $context['tab'],
-                    'view'                      => $context['view'],
+                array_merge(
+                    [ 'page' => self::SETTINGS_SLUG ],
+                    self::context_query_args( $context ),
+                    [
                     'bloglogistics_mfa_message' => $message,
                     'bulk'                      => $bulk_action,
                     'affected'                  => $affected,
-                ],
+                    ]
+                ),
                 admin_url( 'admin.php' )
             )
         );

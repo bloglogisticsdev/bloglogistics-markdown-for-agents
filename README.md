@@ -16,7 +16,7 @@ Users create and curate those files themselves. Version 2.5.0 adds an optional a
 4. Click **Scan Changes and Refresh Health**. The incremental scan checks file existence, timestamps, and sizes, while reusing previous encoding validation for unchanged files.
 5. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 6. Use **Run Live Endpoint Verification** to have your administrator browser check public HTML/Markdown delivery, Markdown MIME type, and discovery markup. When an initial result fails or is uncertain, one fresh browser retry is used, and a successful retry becomes the current result without a stale-cache warning.
-7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, edit an existing Markdown file, view the public Markdown file, manage discovery, and verify selected content.
+7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, paginate larger lists with 20/50/100 items per page, edit an existing Markdown file, view the public Markdown file, manage discovery, and verify selected content.
 8. Use the **llms.txt** tab for focused validation, local Markdown-reference health, and the optional llms.txt editor.
 9. Use **Server & .htaccess** for server compatibility, Markdown MIME delivery, rule repair, and backup management.
 10. Purge page/CDN caches after changes that affect discovery markup or cached public file delivery.
@@ -43,7 +43,7 @@ The stale-file indicator is deliberately labelled **possibly stale**. It compare
 
 ## Administrator interface
 
-Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moved normal live endpoint verification into the administrator's browser. Version 2.4.4 prevents unverified or inconclusive checks from being presented as site-health warnings. Version 2.5.0 adds a plain text editor for existing curated files:
+Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4.1 refined the Pages and Posts health tables so file presence, public delivery, and HTML discovery are easier to understand. Version 2.4.2 improved Posts-page discovery and severity handling. Version 2.4.3 moved normal live endpoint verification into the administrator's browser. Version 2.4.4 prevents unverified or inconclusive checks from being presented as site-health warnings. Version 2.5.0 adds a plain text editor for existing curated files. Version 2.6.0 adds WordPress-style pagination and per-page controls for larger Pages and Posts libraries:
 
 - **Overview** provides linked Markdown Health Dashboard cards and the main scan/live-verification actions.
 - **Pages** shows only WordPress pages in one consolidated health and discovery table.
@@ -51,9 +51,19 @@ Version 2.4.0 reorganized the plugin into five WordPress-style tabs. Version 2.4
 - **llms.txt** provides dedicated validation, warnings, and stored same-site Markdown-reference results.
 - **Server & .htaccess** contains technical server diagnostics, rule management, live server-rule checks, and backup cleanup.
 
-Pages and Posts can be filtered by **Needs attention**, **Missing**, **Stale**, **Encoding**, **Live delivery**, **Discovery**, or **Disabled**. Row actions are focused on the Markdown layer: **Edit Markdown**, **View Markdown**, and **Verify**. WordPress Page/Post editing is intentionally left to the normal WordPress content screens. The plugin preserves the active tab and filter after administrator actions.
+Pages and Posts can be filtered by **Needs attention**, **Missing**, **Stale**, **Encoding**, **Live delivery**, **Discovery**, or **Disabled**. Version 2.6.0 paginates each filtered list with WordPress-style First, Previous, Next, and Last controls, plus a 20/50/100 items-per-page selector remembered for each administrator. Row actions are focused on the Markdown layer: **Edit Markdown**, **View Markdown**, and **Verify**. WordPress Page/Post editing is intentionally left to the normal WordPress content screens. The plugin preserves the active tab, filter, page number, and per-page choice after administrator actions.
 
 Status presentation is consistent across the interface: **Healthy** is green, **Problem** is red, **Review** is yellow, and **Not applicable** is light grey. Text labels accompany colour so status is not communicated by colour alone.
+
+## Pages and Posts pagination
+
+Version 2.6.0 paginates the Pages and Posts administration tables instead of rendering every matching row at once. Each health filter has its own result count and page set. Administrators can choose 20, 50, or 100 items per page, and the choice is remembered per administrator.
+
+The pagination controls follow familiar WordPress list-table behaviour with First, Previous, Next, and Last navigation. Changing a health filter resets that list to page 1. Scans, live verification, row verification, bulk actions, discovery changes, and Markdown editing return the administrator to the same tab, filter, page number, and per-page setting where practical.
+
+Bulk actions and **Save Discovery Choices** operate only on the rows shown on the current page. This prevents a save on one page of results from changing discovery settings on rows that are not currently displayed.
+
+Only the current page of table rows is rendered into the browser, making large Posts and Pages libraries easier to navigate and reducing the size of the administration page.
 
 ## Plain text Markdown editor
 

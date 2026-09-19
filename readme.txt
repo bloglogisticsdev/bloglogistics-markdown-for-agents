@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.5.0
+Stable tag: 2.6.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,7 +31,7 @@ On Apache-compatible servers, static `/slug/index.md` companions create real dir
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the administrator's web browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. Version 2.5.0 adds a deliberately simple text-only editor for existing Markdown companions and llms.txt, with backups, conflict detection, UTF-8 normalization, and atomic replacement. None of these tools run on normal public page loads.
+Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the administrator's web browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. Version 2.5.0 adds a deliberately simple text-only editor for existing Markdown companions and llms.txt, with backups, conflict detection, UTF-8 normalization, and atomic replacement. Version 2.6.0 adds WordPress-style pagination to the Pages and Posts lists, with 20, 50, or 100 items per page and list-position preservation after administrator actions. None of these tools run on normal public page loads.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -54,7 +54,7 @@ Those files remain entirely under the site owner's control. Version 2.5.0 provid
 5. Click **Scan Changes and Refresh Health**. The incremental scan detects companion files, refreshes the Markdown Health Dashboard, validates changed files and llms.txt references, and reuses unchanged encoding-validation results.
 6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
 7. Use **Run Live Endpoint Verification** to have your administrator browser check public HTTP status, redirects, Markdown MIME type, and discovery markup.
-8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, edit an existing Markdown file, view its public Markdown URL, and manage discovery or verification actions.
+8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, paginate large lists, choose 20, 50, or 100 items per page, edit an existing Markdown file, view its public Markdown URL, and manage discovery or verification actions.
 9. Use the **llms.txt** tab for focused validation, local Markdown-reference health, and the optional plain text llms.txt editor.
 10. Use **Server & .htaccess** for server diagnostics, rule repair, live server-rule verification, and backup management.
 11. Purge any WordPress/CDN page cache after changes that affect discovery markup or cached public file delivery.
@@ -142,6 +142,9 @@ No. It does not modify robots.txt or define AI training permissions.
 = What happens when a Markdown file is removed? =
 Run the scan again. The stale `bloglogistics_markdown_url` field will be removed automatically. A page's explicit opt-out preference is preserved.
 
+= How are large Pages and Posts lists handled? =
+Version 2.6.0 paginates the Pages and Posts administration tables. Administrators can show 20, 50, or 100 items per page. Health filters paginate independently, bulk actions apply only to selected rows on the current page, and the plugin preserves the current tab, filter, page number, and per-page choice after scans, verification, bulk actions, discovery changes, and Markdown editing.
+
 = What happens when the plugin is deleted? =
 The plugin removes its own options and metadata. It does not delete llms.txt, Markdown files, WordPress pages, posts, or content.
 
@@ -154,6 +157,17 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.6.0 =
+* Add WordPress-style pagination to the Pages and Posts administration lists.
+* Add administrator-selectable 20, 50, or 100 items per page and remember the choice per administrator.
+* Remove the saved per-page administrator preference when the plugin is uninstalled.
+* Show filtered result counts and First, Previous, Next, and Last page controls above and below the content table.
+* Paginate each health filter independently and reset to page 1 when the filter changes.
+* Preserve the current tab, filter, page number, and per-page choice after scans, live verification, row verification, bulk actions, discovery changes, and Markdown editing.
+* Limit discovery-choice form management and bulk selection to the rows on the current page so saving one page cannot alter another page.
+* Render only the current page of table rows, reducing browser-side table size on sites with many Pages or Posts.
+* Add no pagination or list-management work to normal public page loads.
 
 = 2.5.0 =
 * Add an administrator-only plain text editor for existing Markdown companion files.

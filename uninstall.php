@@ -17,3 +17,4 @@ delete_option( 'bloglogistics_mfa_health' );
 
 delete_post_meta_by_key( 'bloglogistics_markdown_url' );
 delete_post_meta_by_key( 'bloglogistics_markdown_disabled' );
+delete_metadata( 'user', 0, 'bloglogistics_mfa_items_per_page', '', true );
