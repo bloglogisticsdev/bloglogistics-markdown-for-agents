@@ -14,6 +14,7 @@ delete_option( 'bloglogistics_mfa_last_scan' );
 delete_option( 'bloglogistics_mfa_htaccess_status' );
 delete_option( 'bloglogistics_mfa_htaccess_notice_pending' );
 delete_option( 'bloglogistics_mfa_health' );
+delete_option( 'bloglogistics_mfa_private_backups_migrated' );
 
 delete_post_meta_by_key( 'bloglogistics_markdown_url' );
 delete_post_meta_by_key( 'bloglogistics_markdown_disabled' );

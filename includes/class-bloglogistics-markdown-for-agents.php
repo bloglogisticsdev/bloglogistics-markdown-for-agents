@@ -23,6 +23,10 @@ final class BL_Markdown_For_Agents {
     private const LIVE_VERIFY_LIMIT = 75;
     private const BACKUP_RETAIN_COUNT = 3;
     private const PER_PAGE_USER_META = 'bloglogistics_mfa_items_per_page';
+    private const MANAGEMENT_CAPABILITY = 'edit_others_posts';
+    private const SERVER_CAPABILITY = 'manage_options';
+    private const BACKUP_MIGRATION_OPTION = 'bloglogistics_mfa_private_backups_migrated';
+    private static bool $standalone_menu = false;
 
     public static function init(): void {
         self::load_textdomain();
@@ -78,6 +82,7 @@ final class BL_Markdown_For_Agents {
         }
 
         delete_option( BLOGLOGISTICS_MFA_SETTINGS_OPTION );
+        self::migrate_legacy_backups();
         self::ensure_htaccess_rule( true );
         update_option( BLOGLOGISTICS_MFA_VERSION_OPTION, BLOGLOGISTICS_MFA_VERSION, false );
     }
@@ -88,6 +93,10 @@ final class BL_Markdown_For_Agents {
      */
     public static function maybe_upgrade(): void {
         $stored_version = (string) get_option( BLOGLOGISTICS_MFA_VERSION_OPTION, '' );
+
+        if ( '1' !== get_option( self::BACKUP_MIGRATION_OPTION, '0' ) ) {
+            self::migrate_legacy_backups();
+        }
 
         if ( BLOGLOGISTICS_MFA_VERSION === $stored_version ) {
             return;
@@ -149,23 +158,21 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
-     * Register the two user-visible post meta fields.
+     * Register scanner-owned mapping data and the editorial opt-out setting.
      */
     public static function register_meta(): void {
         foreach ( [ 'post', 'page' ] as $post_type ) {
-            add_post_type_support( $post_type, 'custom-fields' );
-
             register_post_meta(
                 $post_type,
                 self::MARKDOWN_URL_META,
                 [
                     'type'              => 'string',
                     'single'            => true,
-                    'show_in_rest'      => true,
+                    'show_in_rest'      => false,
                     'sanitize_callback' => 'esc_url_raw',
-                    'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
-                        return current_user_can( 'edit_post', (int) $post_id );
-                    },
+                    // The scan owns this value. Direct update_post_meta() calls
+                    // made by the plugin are unaffected by this user-facing gate.
+                    'auth_callback'     => '__return_false',
                     'default'           => '',
                 ]
             );
@@ -181,7 +188,8 @@ final class BL_Markdown_For_Agents {
                         return (bool) $value;
                     },
                     'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
-                        return current_user_can( 'edit_post', (int) $post_id );
+                        return current_user_can( self::MANAGEMENT_CAPABILITY )
+                            && current_user_can( 'edit_post', (int) $post_id );
                     },
                     'default'           => false,
                 ]
@@ -216,7 +224,7 @@ final class BL_Markdown_For_Agents {
             return;
         }
 
-        $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        $markdown_url = self::trusted_markdown_url( $post_id );
 
         if ( '' === $markdown_url ) {
             return;
@@ -260,6 +268,40 @@ final class BL_Markdown_For_Agents {
 
     private static function is_discovery_disabled( int $post_id ): bool {
         return (bool) get_post_meta( $post_id, self::DISABLED_META, true );
+    }
+
+    /**
+     * Calculate the only Markdown URL that is valid for a content item now.
+     * This performs no filesystem or HTTP work.
+     */
+    private static function expected_markdown_url( int $post_id ): string {
+        $front_page = ( 'page' === get_option( 'show_on_front' ) ) ? absint( get_option( 'page_on_front', 0 ) ) : 0;
+
+        if ( $front_page && $front_page === $post_id ) {
+            return esc_url_raw( home_url( '/index.md' ) );
+        }
+
+        $permalink = get_permalink( $post_id );
+
+        if ( ! is_string( $permalink ) || '' === $permalink ) {
+            return '';
+        }
+
+        return esc_url_raw( trailingslashit( $permalink ) . 'index.md' );
+    }
+
+    /**
+     * Return a stored mapping only when it still matches the current permalink.
+     */
+    private static function trusted_markdown_url( int $post_id ): string {
+        $stored   = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        $expected = self::expected_markdown_url( $post_id );
+
+        if ( '' === $stored || '' === $expected || ! hash_equals( $expected, $stored ) ) {
+            return '';
+        }
+
+        return $stored;
     }
 
     /**
@@ -521,7 +563,7 @@ final class BL_Markdown_For_Agents {
             return new WP_Error( 'invalid_post', __( 'The requested WordPress content is not an editable published Page or Post.', 'bloglogistics-markdown-for-agents' ) );
         }
 
-        $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        $markdown_url = self::trusted_markdown_url( $post_id );
         if ( '' === $markdown_url ) {
             return new WP_Error( 'missing_mapping', __( 'No scanned Markdown file is mapped to this content item.', 'bloglogistics-markdown-for-agents' ) );
         }
@@ -551,32 +593,200 @@ final class BL_Markdown_For_Agents {
         ];
     }
 
+    private static function path_is_within( string $path, string $root ): bool {
+        $path = untrailingslashit( wp_normalize_path( $path ) );
+        $root = untrailingslashit( wp_normalize_path( $root ) );
+
+        if ( '\\' === DIRECTORY_SEPARATOR ) {
+            $path = strtolower( $path );
+            $root = strtolower( $root );
+        }
+
+        return $path === $root || str_starts_with( $path . '/', trailingslashit( $root ) );
+    }
+
+    private static function files_match( string $first, string $second ): bool {
+        $first_hash  = @hash_file( 'sha256', $first );
+        $second_hash = @hash_file( 'sha256', $second );
+
+        return is_string( $first_hash ) && is_string( $second_hash ) && hash_equals( $first_hash, $second_hash );
+    }
+
     /**
-     * Create a timestamped private-ish backup beneath wp-content before the
-     * plain text editor replaces a Markdown or llms.txt file.
+     * Choose a private backup directory outside the web document root whenever
+     * the hosting layout permits it. A protected, hard-to-guess wp-content
+     * directory is retained as a compatibility fallback.
+     *
+     * @return string|WP_Error
+     */
+    private static function backup_directory() {
+        $public_root = self::public_root();
+        $roots       = [ $public_root ];
+        $document_root = isset( $_SERVER['DOCUMENT_ROOT'] ) ? realpath( (string) $_SERVER['DOCUMENT_ROOT'] ) : false;
+
+        if ( false !== $document_root ) {
+            $roots[] = trailingslashit( wp_normalize_path( $document_root ) );
+        }
+
+        $roots = array_values( array_unique( $roots ) );
+        $hash  = substr( hash( 'sha256', wp_normalize_path( $public_root ) . '|' . home_url( '/' ) ), 0, 12 );
+        $name  = '.bloglogistics-markdown-backups-' . $hash;
+        $candidates = [];
+        $content_dir = wp_normalize_path( WP_CONTENT_DIR );
+
+        $content_is_public = false;
+        foreach ( $roots as $root ) {
+            if ( self::path_is_within( $content_dir, $root ) ) {
+                $content_is_public = true;
+                break;
+            }
+        }
+
+        if ( ! $content_is_public ) {
+            $candidates[] = $content_dir . '/bloglogistics-markdown-backups';
+        }
+
+        foreach ( $roots as $root ) {
+            $parent = wp_normalize_path( dirname( untrailingslashit( $root ) ) );
+            if ( '' === $parent || '.' === $parent || $parent === untrailingslashit( $root ) ) {
+                continue;
+            }
+
+            $candidate = $parent . '/' . $name;
+            $inside_public_root = false;
+            foreach ( $roots as $protected_root ) {
+                if ( self::path_is_within( $candidate, $protected_root ) ) {
+                    $inside_public_root = true;
+                    break;
+                }
+            }
+
+            if ( ! $inside_public_root ) {
+                $candidates[] = $candidate;
+            }
+        }
+
+        $candidates[] = $content_dir . '/' . $name;
+        $candidates   = array_values( array_unique( array_map( 'wp_normalize_path', $candidates ) ) );
+
+        foreach ( $candidates as $candidate ) {
+            $backup_dir = trailingslashit( $candidate );
+
+            if ( ! is_dir( $backup_dir ) && ! wp_mkdir_p( $backup_dir ) ) {
+                continue;
+            }
+
+            if ( ! is_writable( $backup_dir ) ) {
+                continue;
+            }
+
+            @chmod( $backup_dir, 0700 );
+            self::protect_backup_directory( $backup_dir );
+
+            return $backup_dir;
+        }
+
+        return new WP_Error( 'backup_dir', __( 'A private Markdown backup directory could not be created.', 'bloglogistics-markdown-for-agents' ) );
+    }
+
+    private static function protect_backup_directory( string $backup_dir ): void {
+        $files = [
+            'index.php' => "<?php\n// Silence is golden.\n",
+            '.htaccess' => "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n",
+            'web.config' => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration><system.webServer><authorization><deny users=\"*\" /></authorization></system.webServer></configuration>\n",
+        ];
+
+        foreach ( $files as $name => $contents ) {
+            $path = trailingslashit( $backup_dir ) . $name;
+            if ( ! file_exists( $path ) ) {
+                @file_put_contents( $path, $contents, LOCK_EX );
+                @chmod( $path, 0600 );
+            }
+        }
+    }
+
+    /**
+     * Move backups created by older versions out of public directories when a
+     * private backup directory is available. Originals are deleted only after
+     * the moved copy has been verified byte-for-byte.
+     */
+    private static function migrate_legacy_backups(): void {
+        $backup_dir = self::backup_directory();
+
+        if ( is_wp_error( $backup_dir ) ) {
+            return;
+        }
+
+        $sources = [];
+        $legacy_text = glob( trailingslashit( wp_normalize_path( WP_CONTENT_DIR . '/bloglogistics-markdown-backups' ) ) . '*.bak' );
+        $legacy_htaccess = glob( self::public_root() . '.htaccess.bloglogistics-mfa-backup-*' );
+
+        if ( is_array( $legacy_text ) ) {
+            $sources = array_merge( $sources, $legacy_text );
+        }
+        if ( is_array( $legacy_htaccess ) ) {
+            $sources = array_merge( $sources, $legacy_htaccess );
+        }
+
+        $failed = false;
+
+        foreach ( $sources as $source ) {
+            $source = wp_normalize_path( (string) $source );
+
+            if ( ! is_file( $source ) || self::path_is_within( $source, $backup_dir ) ) {
+                continue;
+            }
+
+            $name = basename( $source );
+            if ( ! str_ends_with( $name, '.bak' ) && 1 !== preg_match( '/^\.htaccess\.bloglogistics-mfa-backup-\d{8}-\d{6}(?:-\d+)?$/', $name ) ) {
+                continue;
+            }
+
+            $destination = $backup_dir . $name;
+            $suffix      = 2;
+            while ( file_exists( $destination ) ) {
+                if ( self::files_match( $source, $destination ) ) {
+                    @unlink( $source );
+                    continue 2;
+                }
+                $destination = str_ends_with( $name, '.bak' )
+                    ? $backup_dir . substr( $name, 0, -4 ) . '-migrated-' . $suffix . '.bak'
+                    : $backup_dir . $name . '-' . $suffix;
+                $suffix++;
+            }
+
+            $moved = @rename( $source, $destination );
+            if ( ! $moved ) {
+                $moved = @copy( $source, $destination )
+                    && self::files_match( $source, $destination )
+                    && @unlink( $source );
+            }
+
+            if ( ! $moved ) {
+                @unlink( $destination );
+                $failed = true;
+                continue;
+            }
+
+            @chmod( $destination, 0600 );
+        }
+
+        if ( ! $failed ) {
+            update_option( self::BACKUP_MIGRATION_OPTION, '1', false );
+        }
+    }
+
+    /**
+     * Create a timestamped private backup before the plain text editor
+     * replaces a Markdown or llms.txt file.
      *
      * @return string|WP_Error Backup path on success.
      */
     private static function backup_text_file( string $file, string $relative ) {
-        $backup_dir = trailingslashit( wp_normalize_path( WP_CONTENT_DIR . '/bloglogistics-markdown-backups' ) );
+        $backup_dir = self::backup_directory();
 
-        if ( ! is_dir( $backup_dir ) && ! wp_mkdir_p( $backup_dir ) ) {
-            return new WP_Error( 'backup_dir', __( 'The Markdown backup directory could not be created.', 'bloglogistics-markdown-for-agents' ) );
-        }
-
-        if ( ! is_writable( $backup_dir ) ) {
-            return new WP_Error( 'backup_dir', __( 'The Markdown backup directory is not writable.', 'bloglogistics-markdown-for-agents' ) );
-        }
-
-        $index_file = $backup_dir . 'index.php';
-        if ( ! file_exists( $index_file ) ) {
-            @file_put_contents( $index_file, "<?php\n// Silence is golden.\n", LOCK_EX );
-        }
-
-        $deny_file = $backup_dir . '.htaccess';
-        if ( ! file_exists( $deny_file ) ) {
-            $deny = "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
-            @file_put_contents( $deny_file, $deny, LOCK_EX );
+        if ( is_wp_error( $backup_dir ) ) {
+            return $backup_dir;
         }
 
         $safe_name = sanitize_file_name( str_replace( '/', '-', trim( $relative, '/' ) ) );
@@ -590,6 +800,13 @@ final class BL_Markdown_For_Agents {
 
         if ( ! @copy( $file, $backup ) ) {
             return new WP_Error( 'backup_failed', __( 'A backup could not be created, so the file was not changed.', 'bloglogistics-markdown-for-agents' ) );
+        }
+
+        @chmod( $backup, 0600 );
+
+        if ( ! self::files_match( $file, $backup ) ) {
+            @unlink( $backup );
+            return new WP_Error( 'backup_failed', __( 'The backup could not be verified, so the file was not changed.', 'bloglogistics-markdown-for-agents' ) );
         }
 
         return $backup;
@@ -1112,7 +1329,7 @@ final class BL_Markdown_For_Agents {
      * @return array<string,mixed>
      */
     private static function verify_live_item( int $post_id, bool $has_llms ): array {
-        $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        $markdown_url = self::trusted_markdown_url( $post_id );
         $html_url     = get_permalink( $post_id );
         $disabled     = self::is_discovery_disabled( $post_id );
         $checked_at   = time();
@@ -1470,8 +1687,15 @@ final class BL_Markdown_For_Agents {
      */
     private static function htaccess_backups(): array {
         $public_root = self::public_root();
-        $candidates  = glob( $public_root . '.htaccess.bloglogistics-mfa-backup-*' );
+        $backup_dir  = self::backup_directory();
+        $candidates  = is_wp_error( $backup_dir ) ? [] : glob( $backup_dir . '.htaccess.bloglogistics-mfa-backup-*' );
+        $legacy      = glob( $public_root . '.htaccess.bloglogistics-mfa-backup-*' );
         $backups     = [];
+
+        $candidates = is_array( $candidates ) ? $candidates : [];
+        if ( is_array( $legacy ) ) {
+            $candidates = array_merge( $candidates, $legacy );
+        }
 
         if ( ! is_array( $candidates ) ) {
             return $backups;
@@ -1750,13 +1974,23 @@ final class BL_Markdown_For_Agents {
     }
 
     /**
-     * Create a timestamped backup beside the live .htaccess file.
+     * Create a timestamped .htaccess backup in the private backup directory.
      *
      * @return array{success:bool,path:string,message:string}
      */
     private static function backup_htaccess( string $htaccess_file, string $contents ): array {
+        $backup_dir = self::backup_directory();
+
+        if ( is_wp_error( $backup_dir ) ) {
+            return [
+                'success' => false,
+                'path'    => '',
+                'message' => $backup_dir->get_error_message(),
+            ];
+        }
+
         $timestamp = wp_date( 'Ymd-His' );
-        $base_path = $htaccess_file . '.bloglogistics-mfa-backup-' . $timestamp;
+        $base_path = $backup_dir . '.htaccess.bloglogistics-mfa-backup-' . $timestamp;
         $backup    = $base_path;
         $suffix    = 2;
 
@@ -1787,13 +2021,7 @@ final class BL_Markdown_For_Agents {
             ];
         }
 
-        if ( file_exists( $htaccess_file ) ) {
-            $mode = @fileperms( $htaccess_file );
-
-            if ( false !== $mode ) {
-                @chmod( $backup, $mode & 0777 );
-            }
-        }
+        @chmod( $backup, 0600 );
 
         return [
             'success' => true,
@@ -1834,7 +2062,7 @@ final class BL_Markdown_For_Agents {
             }
 
             $html_url     = get_permalink( $post_id );
-            $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+            $markdown_url = self::trusted_markdown_url( (int) $post_id );
 
             if ( ! is_string( $html_url ) || '' === $html_url || '' === $markdown_url ) {
                 continue;
@@ -2157,7 +2385,7 @@ final class BL_Markdown_For_Agents {
      * Show one post-update/activation notice describing the .htaccess result.
      */
     public static function render_htaccess_admin_notice(): void {
-        if ( ! current_user_can( 'manage_options' ) || '1' !== get_option( self::HTACCESS_NOTICE_OPTION, '0' ) ) {
+        if ( ! current_user_can( self::SERVER_CAPABILITY ) || '1' !== get_option( self::HTACCESS_NOTICE_OPTION, '0' ) ) {
             return;
         }
 
@@ -2457,6 +2685,24 @@ final class BL_Markdown_For_Agents {
 
         foreach ( (array) $menu as $item ) {
             if ( isset( $item[2] ) && self::MENU_SLUG === $item[2] ) {
+                $parent_capability = isset( $item[1] ) ? (string) $item[1] : '';
+                if ( '' !== $parent_capability && current_user_can( $parent_capability ) ) {
+                    return;
+                }
+
+                // Another BlogLogistics plugin owns an Administrator-only
+                // parent menu. Give Editors a safe direct entry to this screen
+                // without lowering the other plugin's capability.
+                self::$standalone_menu = true;
+                add_menu_page(
+                    __( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ),
+                    __( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ),
+                    self::MANAGEMENT_CAPABILITY,
+                    self::SETTINGS_SLUG,
+                    [ __CLASS__, 'render_settings_page' ],
+                    'dashicons-media-text',
+                    58
+                );
                 return;
             }
         }
@@ -2464,7 +2710,7 @@ final class BL_Markdown_For_Agents {
         add_menu_page(
             'BlogLogistics',
             'BlogLogistics',
-            'manage_options',
+            self::MANAGEMENT_CAPABILITY,
             self::MENU_SLUG,
             [ __CLASS__, 'render_bloglogistics_dashboard' ],
             'dashicons-rss',
@@ -2473,7 +2719,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function render_bloglogistics_dashboard(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to access this page.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -2481,11 +2727,15 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function register_settings_page(): void {
+        if ( self::$standalone_menu ) {
+            return;
+        }
+
         add_submenu_page(
             self::MENU_SLUG,
             __( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ),
             __( 'Markdown for Agents', 'bloglogistics-markdown-for-agents' ),
-            'manage_options',
+            self::MANAGEMENT_CAPABILITY,
             self::SETTINGS_SLUG,
             [ __CLASS__, 'render_settings_page' ]
         );
@@ -2498,7 +2748,7 @@ final class BL_Markdown_For_Agents {
     public static function enqueue_admin_assets( string $hook_suffix ): void {
         unset( $hook_suffix );
 
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             return;
         }
 
@@ -2524,6 +2774,7 @@ final class BL_Markdown_For_Agents {
                 'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
                 'nonce'     => wp_create_nonce( 'bloglogistics_mfa_browser_verify' ),
                 'autoStart' => isset( $_GET['browser_verify'] ) && '1' === (string) wp_unslash( $_GET['browser_verify'] ),
+                'maxResponseBytes' => 1048576,
                 'labels'    => [
                     'starting'  => __( 'Browser verification is starting...', 'bloglogistics-markdown-for-agents' ),
                     'progress'  => __( 'Browser verification: %1$d of %2$d checked.', 'bloglogistics-markdown-for-agents' ),
@@ -2538,7 +2789,11 @@ final class BL_Markdown_For_Agents {
     private static function settings_tab(): string {
         $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'overview';
 
-        return in_array( $tab, [ 'overview', 'pages', 'posts', 'llms', 'server' ], true ) ? $tab : 'overview';
+        if ( ! in_array( $tab, [ 'overview', 'pages', 'posts', 'llms', 'server' ], true ) ) {
+            return 'overview';
+        }
+
+        return 'server' === $tab && ! current_user_can( self::SERVER_CAPABILITY ) ? 'overview' : $tab;
     }
 
     private static function settings_view(): string {
@@ -2556,7 +2811,8 @@ final class BL_Markdown_For_Agents {
         $requested = isset( $_GET['mfa_per_page'] ) ? absint( wp_unslash( $_GET['mfa_per_page'] ) ) : 0;
 
         if ( in_array( $requested, $allowed, true ) ) {
-            if ( get_current_user_id() ) {
+            $nonce = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : '';
+            if ( get_current_user_id() && wp_verify_nonce( $nonce, 'bloglogistics_mfa_set_per_page' ) ) {
                 update_user_meta( get_current_user_id(), self::PER_PAGE_USER_META, $requested );
             }
             return $requested;
@@ -2816,7 +3072,7 @@ final class BL_Markdown_For_Agents {
             'attention'          => $attention,
             'item'               => $item,
             'live_item'          => $live_item,
-            'markdown_url'       => $exists && ! empty( $item['markdown_url'] ) ? (string) $item['markdown_url'] : (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true ),
+            'markdown_url'       => $exists && ! empty( $item['markdown_url'] ) ? (string) $item['markdown_url'] : self::trusted_markdown_url( $post_id ),
         ];
     }
 
@@ -3057,6 +3313,10 @@ final class BL_Markdown_For_Agents {
             'server'   => __( 'Server & .htaccess', 'bloglogistics-markdown-for-agents' ),
         ];
 
+        if ( ! current_user_can( self::SERVER_CAPABILITY ) ) {
+            unset( $tabs['server'] );
+        }
+
         echo '<nav class="nav-tab-wrapper bl-mfa-tabs" aria-label="' . esc_attr__( 'Markdown for Agents sections', 'bloglogistics-markdown-for-agents' ) . '">';
         foreach ( $tabs as $tab => $label ) {
             $class = 'nav-tab' . ( $active_tab === $tab ? ' nav-tab-active' : '' );
@@ -3238,16 +3498,18 @@ final class BL_Markdown_For_Agents {
             $llms_detail
         );
 
-        $rewrite_ok = ! empty( $htaccess_status['rewrite_rule_verified'] );
-        $mime_ok    = ! empty( $htaccess_status['mime_rule_verified'] );
-        $server_status = ! empty( $server['supports_htaccess'] ) ? ( $rewrite_ok && $mime_ok ? 'healthy' : 'review' ) : 'na';
-        self::render_dashboard_card(
-            __( 'Server rules', 'bloglogistics-markdown-for-agents' ),
-            ( (int) $rewrite_ok + (int) $mime_ok ) . '/2',
-            $server_status,
-            [ __( 'Open server tools', 'bloglogistics-markdown-for-agents' ) => self::settings_url( 'server' ) ],
-            ! empty( $server['supports_htaccess'] ) ? __( '2 managed rule groups expected', 'bloglogistics-markdown-for-agents' ) : __( 'Server-level configuration may be required', 'bloglogistics-markdown-for-agents' )
-        );
+        if ( current_user_can( self::SERVER_CAPABILITY ) ) {
+            $rewrite_ok = ! empty( $htaccess_status['rewrite_rule_verified'] );
+            $mime_ok    = ! empty( $htaccess_status['mime_rule_verified'] );
+            $server_status = ! empty( $server['supports_htaccess'] ) ? ( $rewrite_ok && $mime_ok ? 'healthy' : 'review' ) : 'na';
+            self::render_dashboard_card(
+                __( 'Server rules', 'bloglogistics-markdown-for-agents' ),
+                ( (int) $rewrite_ok + (int) $mime_ok ) . '/2',
+                $server_status,
+                [ __( 'Open server tools', 'bloglogistics-markdown-for-agents' ) => self::settings_url( 'server' ) ],
+                ! empty( $server['supports_htaccess'] ) ? __( '2 managed rule groups expected', 'bloglogistics-markdown-for-agents' ) : __( 'Server-level configuration may be required', 'bloglogistics-markdown-for-agents' )
+            );
+        }
         echo '</div>';
 
         echo '<div class="bl-mfa-overview-meta">';
@@ -3256,7 +3518,7 @@ final class BL_Markdown_For_Agents {
         echo '</div>';
 
         self::render_scan_actions( 'overview', 'all' );
-        echo '<p class="description">' . esc_html__( 'The incremental scan performs local administrator-only checks. Live verification runs public requests from your administrator browser, then securely stores the observed status, headers, and discovery results. Neither operation runs during normal public page loads.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p class="description">' . esc_html__( 'The incremental scan performs local authorised-user checks. Live verification runs public requests from your browser, then securely stores the observed status, headers, and discovery results. Neither operation runs during normal public page loads.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         echo '<h2 style="margin-top:2em;">' . esc_html__( 'How it works', 'bloglogistics-markdown-for-agents' ) . '</h2>';
         echo '<ol class="bl-mfa-how-it-works">';
@@ -3288,6 +3550,7 @@ final class BL_Markdown_For_Agents {
             echo '<input type="hidden" name="tab" value="' . esc_attr( $tab ) . '">';
             echo '<input type="hidden" name="view" value="' . esc_attr( $view ) . '">';
             echo '<input type="hidden" name="paged" value="1">';
+            wp_nonce_field( 'bloglogistics_mfa_set_per_page' );
             echo '<label for="bl-mfa-per-page-' . esc_attr( $tab ) . '">' . esc_html__( 'Items per page', 'bloglogistics-markdown-for-agents' ) . '</label> ';
             echo '<select id="bl-mfa-per-page-' . esc_attr( $tab ) . '" name="mfa_per_page">';
             foreach ( [ 20, 50, 100 ] as $option ) {
@@ -3376,7 +3639,7 @@ final class BL_Markdown_For_Agents {
         $page_ids      = array_slice( $visible_ids, $offset, $per_page );
 
         echo '<h2>' . esc_html( 'page' === $post_type ? __( 'Pages', 'bloglogistics-markdown-for-agents' ) : __( 'Posts', 'bloglogistics-markdown-for-agents' ) ) . '</h2>';
-        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. Markdown File tells you whether the curated /index.md file exists. Live Delivery uses your administrator browser to check whether the public HTML page and Markdown file load correctly and whether Markdown is served with the expected MIME type.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p>' . esc_html__( 'Review Markdown health and discovery settings here. Markdown File tells you whether the curated /index.md file exists. Live Delivery uses your browser to check whether the public HTML page and Markdown file load correctly and whether Markdown is served with the expected MIME type.', 'bloglogistics-markdown-for-agents' ) . '</p>';
         echo '<p class="description">' . esc_html__( 'Discovery is a separate check of the HTML <head>: it confirms whether the page advertises its Markdown file and llms.txt using discovery links. A Markdown file can be perfectly reachable even when discovery markup is missing or stale in cached HTML.', 'bloglogistics-markdown-for-agents' ) . '</p>';
         echo '<p class="description">' . esc_html__( 'Large lists are paginated. Choose 20, 50, or 100 items per page; your choice is remembered for your administrator account.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
@@ -3642,7 +3905,7 @@ final class BL_Markdown_For_Agents {
         $local_links  = isset( $llms['local_links'] ) && is_array( $llms['local_links'] ) ? $llms['local_links'] : [];
 
         echo '<h2>' . esc_html__( 'llms.txt', 'bloglogistics-markdown-for-agents' ) . '</h2>';
-        echo '<p>' . esc_html__( 'This tab validates your user-managed llms.txt file. The plugin never generates or curates its contents automatically; the optional plain editor saves only what an administrator explicitly enters.', 'bloglogistics-markdown-for-agents' ) . '</p>';
+        echo '<p>' . esc_html__( 'This tab validates your user-managed llms.txt file. The plugin never generates or curates its contents automatically; the optional plain editor saves only what the authorised user explicitly enters.', 'bloglogistics-markdown-for-agents' ) . '</p>';
 
         if ( $exists ) {
             $edit_llms_url = self::settings_url( 'llms', 'all', [ 'edit_file' => 'llms' ] );
@@ -3926,7 +4189,7 @@ final class BL_Markdown_For_Agents {
      * Save one administrator-authored Markdown or llms.txt edit.
      */
     public static function handle_save_text_file(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to edit Markdown files.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -3973,7 +4236,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function render_settings_page(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to access this page.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -3983,8 +4246,8 @@ final class BL_Markdown_For_Agents {
         $message         = isset( $_GET['bloglogistics_mfa_message'] ) ? sanitize_key( wp_unslash( $_GET['bloglogistics_mfa_message'] ) ) : '';
         $htaccess_status = get_option( self::HTACCESS_STATUS_OPTION, [] );
         $health          = get_option( self::HEALTH_OPTION, [] );
-        $server          = self::server_diagnostics();
-        $backups         = self::htaccess_backups();
+        $server          = current_user_can( self::SERVER_CAPABILITY ) ? self::server_diagnostics() : [];
+        $backups         = current_user_can( self::SERVER_CAPABILITY ) ? self::htaccess_backups() : [];
 
         $htaccess_status = is_array( $htaccess_status ) ? $htaccess_status : [];
         $health          = is_array( $health ) ? $health : [];
@@ -4000,7 +4263,7 @@ final class BL_Markdown_For_Agents {
         </style>';
 
         echo '<div class="notice notice-info inline"><p><strong>' . esc_html__( 'Editorial control stays with you.', 'bloglogistics-markdown-for-agents' ) . '</strong> ';
-        echo esc_html__( 'This plugin never generates or rewrites your curated content automatically. Its optional plain text editor saves only the Markdown or llms.txt text that an administrator explicitly enters.', 'bloglogistics-markdown-for-agents' );
+        echo esc_html__( 'This plugin never generates or rewrites your curated content automatically. Its optional plain text editor saves only the Markdown or llms.txt text that an authorised administrator or editor explicitly enters.', 'bloglogistics-markdown-for-agents' );
         echo '</p></div>';
 
         if ( 'file_saved' === $message ) {
@@ -4102,7 +4365,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function handle_scan(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to scan Markdown files.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -4111,8 +4374,10 @@ final class BL_Markdown_For_Agents {
         $force   = ! empty( $_POST['force_full_scan'] );
         $context = self::return_context();
         $result  = self::scan_markdown_files( $force );
-        self::ensure_htaccess_rule( true );
-        delete_option( self::HTACCESS_NOTICE_OPTION );
+        if ( current_user_can( self::SERVER_CAPABILITY ) ) {
+            self::ensure_htaccess_rule( true );
+            delete_option( self::HTACCESS_NOTICE_OPTION );
+        }
 
         wp_safe_redirect(
             add_query_arg(
@@ -4136,7 +4401,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function handle_htaccess(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::SERVER_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to manage the .htaccess Markdown rules.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -4164,7 +4429,7 @@ final class BL_Markdown_For_Agents {
      * URLs are supplied by WordPress; the browser performs the public requests.
      */
     public static function ajax_browser_verify_targets(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_send_json_error( [ 'message' => __( 'You do not have permission to run live Markdown verification.', 'bloglogistics-markdown-for-agents' ) ], 403 );
         }
 
@@ -4214,7 +4479,7 @@ final class BL_Markdown_For_Agents {
 
         foreach ( $post_ids as $post_id ) {
             $html_url     = get_permalink( $post_id );
-            $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+            $markdown_url = self::trusted_markdown_url( $post_id );
 
             if ( ! is_string( $html_url ) || '' === $html_url || '' === $markdown_url ) {
                 continue;
@@ -4255,7 +4520,7 @@ final class BL_Markdown_For_Agents {
      * @return array<string,mixed>
      */
     private static function browser_observation_to_live_item( int $post_id, array $observation, bool $has_llms ): array {
-        $markdown_url = (string) get_post_meta( $post_id, self::MARKDOWN_URL_META, true );
+        $markdown_url = self::trusted_markdown_url( $post_id );
         $html_url     = get_permalink( $post_id );
         $disabled     = self::is_discovery_disabled( $post_id );
         $html_status  = isset( $observation['html_status'] ) ? absint( $observation['html_status'] ) : 0;
@@ -4374,7 +4639,7 @@ final class BL_Markdown_For_Agents {
      * Save factual observations collected by the administrator's browser.
      */
     public static function ajax_store_browser_results(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_send_json_error( [ 'message' => __( 'You do not have permission to save live Markdown verification.', 'bloglogistics-markdown-for-agents' ) ], 403 );
         }
 
@@ -4556,7 +4821,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function handle_live_verify(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to run live Markdown verification.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -4578,7 +4843,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function handle_verify_item(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to run live Markdown verification.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -4607,7 +4872,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function handle_cleanup_backups(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::SERVER_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to clean up .htaccess backups.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -4633,7 +4898,7 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function handle_save_exclusions(): void {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
             wp_die( esc_html__( 'You do not have permission to change Markdown discovery settings.', 'bloglogistics-markdown-for-agents' ) );
         }
 
@@ -4753,6 +5018,10 @@ final class BL_Markdown_For_Agents {
     }
 
     public static function register_editor_meta_box(): void {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) ) {
+            return;
+        }
+
         foreach ( [ 'post', 'page' ] as $post_type ) {
             add_meta_box(
                 'bloglogistics-mfa-discovery',
@@ -4768,7 +5037,7 @@ final class BL_Markdown_For_Agents {
     public static function render_editor_meta_box( WP_Post $post ): void {
         wp_nonce_field( 'bloglogistics_mfa_editor_options', 'bloglogistics_mfa_editor_nonce' );
 
-        $markdown_url = (string) get_post_meta( $post->ID, self::MARKDOWN_URL_META, true );
+        $markdown_url = self::trusted_markdown_url( $post->ID );
         $disabled     = self::is_discovery_disabled( $post->ID );
 
         if ( '' !== $markdown_url ) {
@@ -4810,7 +5079,7 @@ final class BL_Markdown_For_Agents {
             return;
         }
 
-        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+        if ( ! current_user_can( self::MANAGEMENT_CAPABILITY ) || ! current_user_can( 'edit_post', $post_id ) ) {
             return;
         }
 

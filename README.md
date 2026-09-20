@@ -6,7 +6,7 @@ BlogLogistics Markdown for Agents advertises, validates, live-verifies, and safe
 
 The plugin deliberately keeps editorial control with the site owner. It never generates Markdown or derives machine-readable content automatically from WordPress.
 
-Users create and curate those files themselves. Version 2.5.0 adds an optional administrator-only plain text editor for existing `llms.txt`, `/index.md`, and `/path/index.md` files. The editor saves only the text the administrator explicitly enters; it does not create missing curated files or convert WordPress content into Markdown. The plugin discovers existing files during an administrator-run scan, records the relationship in WordPress post metadata, validates local file health, and advertises eligible files on the corresponding HTML page.
+Users create and curate those files themselves. Administrators and Editors can use the optional plain text editor for existing `llms.txt`, `/index.md`, and `/path/index.md` files. The editor saves only the text the authorised user explicitly enters; it does not create missing curated files or convert WordPress content into Markdown. Authors and lower roles cannot access the management screen. The plugin discovers existing files during an authorised scan, records the relationship in protected WordPress post metadata, validates local file health, and advertises eligible files on the corresponding HTML page.
 
 ## Workflow
 
@@ -15,7 +15,7 @@ Users create and curate those files themselves. Version 2.5.0 adds an optional a
 3. In WordPress, open **BlogLogistics > Markdown for Agents**.
 4. Click **Scan Changes and Refresh Health**. The incremental scan checks file existence, timestamps, and sizes, while reusing previous encoding validation for unchanged files.
 5. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
-6. Use **Run Live Endpoint Verification** to have your administrator browser check public HTML/Markdown delivery, Markdown MIME type, and discovery markup. When an initial result fails or is uncertain, one fresh browser retry is used, and a successful retry becomes the current result without a stale-cache warning.
+6. Use **Run Live Endpoint Verification** to have the authorised user's browser check public HTML/Markdown delivery, Markdown MIME type, and discovery markup. When an initial result fails or is uncertain, one fresh browser retry is used, and a successful retry becomes the current result without a stale-cache warning.
 7. Use the **Pages** and **Posts** tabs to review content health separately, apply filters, paginate larger lists with 20/50/100 items per page, edit an existing Markdown file, view the public Markdown file, manage discovery, and verify selected content.
 8. Use the **llms.txt** tab for focused validation, local Markdown-reference health, and the optional llms.txt editor.
 9. Use **Server & .htaccess** for server compatibility, Markdown MIME delivery, rule repair, and backup management.
@@ -23,7 +23,7 @@ Users create and curate those files themselves. Version 2.5.0 adds an optional a
 
 ## Markdown Health Dashboard
 
-The administrator-only health snapshot reports:
+The authorised management health snapshot reports:
 
 - published posts and pages checked;
 - detected and missing Markdown companions;
@@ -67,7 +67,7 @@ Only the current page of table rows is rendered into the browser, making large P
 
 ## Plain text Markdown editor
 
-Version 2.5.0 adds a deliberately simple administrator-only editor for existing curated files. It is not Gutenberg, TinyMCE, or a Markdown generator. It is a monospaced text area for directly editing the actual `.md` file or root `llms.txt`.
+Version 2.5.0 adds a deliberately simple editor for existing curated files. In version 2.6.1, standard WordPress Administrators and Editors can use it, while Authors and lower roles cannot access the management screen. It is not Gutenberg, TinyMCE, or a Markdown generator. It is a monospaced text area for directly editing the actual `.md` file or root `llms.txt`.
 
 The editor encourages a restrained, AI-readable subset such as:
 
@@ -89,14 +89,14 @@ Safety behaviour includes:
 
 - editing only a scanned same-site Markdown file or the existing root `llms.txt`;
 - never accepting an arbitrary filesystem path from the request;
-- administrator capability and nonce checks;
+- Editor-or-higher capability and nonce checks;
 - a timestamped backup before each successful replacement;
 - conflict detection when the file changed after the editor was opened;
 - UTF-8 validation, BOM removal, and LF line-ending normalization;
 - a same-directory temporary file followed by atomic replacement when supported;
 - an incremental local health refresh after saving.
 
-The backup copies are stored under `wp-content/bloglogistics-markdown-backups`. The plugin creates an `index.php` and Apache deny rule in that backup directory as a defence-in-depth measure.
+Backup copies are stored outside the public web root when the host permits it. If no external private location is writable, the plugin uses a hard-to-guess directory under `wp-content` with an `index.php`, Apache deny rule, IIS deny rule, and restrictive filesystem permissions as defence in depth. Recognised backups from earlier versions are migrated when possible.
 
 ## Incremental scanning
 

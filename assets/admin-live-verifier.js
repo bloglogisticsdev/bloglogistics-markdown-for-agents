@@ -9,6 +9,7 @@
 
     var concurrency = 4;
     var progressNotice = null;
+    var maxResponseBytes = Number(config.maxResponseBytes) > 0 ? Number(config.maxResponseBytes) : 1048576;
 
     function label(name, fallback) {
         return config.labels && config.labels[name] ? config.labels[name] : fallback;
@@ -58,6 +59,59 @@
         return parsed.toString();
     }
 
+    function responseTooLargeError() {
+        var error = new Error('Response exceeded the browser verification size limit');
+        error.name = 'ResponseTooLargeError';
+        return error;
+    }
+
+    function readTextWithLimit(response) {
+        var declaredLength = parseInt(response.headers.get('content-length') || '0', 10);
+        if (declaredLength > maxResponseBytes) {
+            if (response.body && typeof response.body.cancel === 'function') {
+                response.body.cancel().catch(function () {});
+            }
+            return Promise.reject(responseTooLargeError());
+        }
+
+        if (!response.body || typeof response.body.getReader !== 'function' || typeof TextDecoder === 'undefined') {
+            return response.text().then(function (text) {
+                var byteLength = typeof TextEncoder !== 'undefined'
+                    ? new TextEncoder().encode(text).byteLength
+                    : text.length;
+                if (byteLength > maxResponseBytes) {
+                    throw responseTooLargeError();
+                }
+                return text;
+            });
+        }
+
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder('utf-8');
+        var received = 0;
+        var text = '';
+
+        function readNext() {
+            return reader.read().then(function (result) {
+                if (result.done) {
+                    text += decoder.decode();
+                    return text;
+                }
+
+                received += result.value.byteLength;
+                if (received > maxResponseBytes) {
+                    reader.cancel().catch(function () {});
+                    throw responseTooLargeError();
+                }
+
+                text += decoder.decode(result.value, {stream: true});
+                return readNext();
+            });
+        }
+
+        return readNext();
+    }
+
     function fetchPublic(url, kind, retry) {
         var requestedUrl = retry ? cacheBustUrl(url) : url;
         var accept = kind === 'html'
@@ -88,10 +142,20 @@
                 error: ''
             };
 
-            return response.text().then(function (text) {
-                if (kind === 'html') {
-                    base.body = text || '';
+            if (kind !== 'html') {
+                if (response.body && typeof response.body.cancel === 'function') {
+                    return response.body.cancel().catch(function () {}).then(function () { return base; });
                 }
+                return base;
+            }
+
+            return readTextWithLimit(response).then(function (text) {
+                base.body = text || '';
+                return base;
+            }).catch(function (error) {
+                base.error = error && error.name === 'ResponseTooLargeError'
+                    ? 'Browser response exceeded the verification size limit'
+                    : (error && error.message ? String(error.message) : 'Browser response could not be read');
                 return base;
             });
         }).catch(function (error) {

@@ -4,7 +4,7 @@ Tags: markdown, ai, agents, llms, discovery
 Requires at least: 7.0
 Tested up to: 7.0
 Requires PHP: 8.3
-Stable tag: 2.6.0
+Stable tag: 2.6.1
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -14,7 +14,7 @@ Advertises, validates, live-verifies, and safely edits user-curated Markdown com
 
 BlogLogistics Markdown for Agents connects WordPress posts and pages to carefully curated static Markdown companion files.
 
-The plugin deliberately does not generate Markdown or derive machine-readable content automatically from WordPress. Users retain full editorial control. Version 2.5.0 adds an optional plain text editor that saves only the existing Markdown or llms.txt file an administrator explicitly chooses to edit.
+The plugin deliberately does not generate Markdown or derive machine-readable content automatically from WordPress. Users retain full editorial control. The optional plain text editor saves only an existing Markdown or llms.txt file that an authorised Administrator or Editor explicitly chooses to edit.
 
 Typical file locations are:
 
@@ -23,15 +23,15 @@ Typical file locations are:
 * `/notes/index.md` for `/notes/`.
 * `/llms.txt` for the site's curated LLM guidance file.
 
-An administrator explicitly runs a scan after Markdown files are added, removed, or moved. The scan checks the filesystem and stores each detected Markdown URL in the WordPress custom field `bloglogistics_markdown_url`. Version 2.3.0 makes this scan incremental by reusing previous encoding-validation results for unchanged companions while still checking file existence, timestamps, and sizes.
+An authorised Administrator or Editor explicitly runs a scan after Markdown files are added, removed, or moved. The scan checks the filesystem and stores each detected Markdown URL in the protected WordPress metadata key `bloglogistics_markdown_url`. Version 2.3.0 makes this scan incremental by reusing previous encoding-validation results for unchanged companions while still checking file existence, timestamps, and sizes.
 
 Normal public page loads do not scan directories, check for files, probe URLs, generate Markdown, or make external requests. The plugin uses the already-stored WordPress metadata and outputs discovery markup once for eligible pages.
 
-On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. The plugin safely maintains a root `.htaccess` permalink compatibility rule so the WordPress page and Markdown companion can coexist. Version 2.3.1 also maintains a Markdown MIME rule so `.md` files are served as UTF-8 `text/markdown`. Before changing `.htaccess`, the plugin independently checks for equivalent rewrite and MIME directives anywhere in the file. Existing manually added directives are respected and never duplicated. When a write is actually required, it creates one timestamped backup beside the live file, reads the file back to confirm both required rules are present, and, when a non-homepage companion is available, performs an end-to-end HTTP check that also confirms the live Markdown Content-Type.
+On Apache-compatible servers, static `/slug/index.md` companions create real directories that can otherwise intercept the corresponding WordPress `/slug/` permalink. The plugin safely maintains a root `.htaccess` permalink compatibility rule so the WordPress page and Markdown companion can coexist. Version 2.3.1 also maintains a Markdown MIME rule so `.md` files are served as UTF-8 `text/markdown`. Before changing `.htaccess`, the plugin independently checks for equivalent rewrite and MIME directives anywhere in the file. Existing manually added directives are respected and never duplicated. When a write is actually required, it creates one timestamped backup in the plugin's private backup directory, reads the file back to confirm both required rules are present, and, when a non-homepage companion is available, performs an end-to-end HTTP check that also confirms the live Markdown Content-Type.
 
 Pages that do not have a Markdown companion are automatically ignored.
 
-Version 2.2.0 added the administrator-only Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the administrator's web browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. Version 2.5.0 adds a deliberately simple text-only editor for existing Markdown companions and llms.txt, with backups, conflict detection, UTF-8 normalization, and atomic replacement. Version 2.6.0 adds WordPress-style pagination to the Pages and Posts lists, with 20, 50, or 100 items per page and list-position preservation after administrator actions. None of these tools run on normal public page loads.
+Version 2.2.0 added the Markdown Health Dashboard. Version 2.3.0 extended it with live endpoint verification, Markdown MIME-type checks, discovery-markup verification, incremental scanning, bulk management, server compatibility diagnostics, and `.htaccess` backup cleanup. Version 2.4.0 reorganized these tools into an easier tabbed interface. Version 2.4.1 separated Markdown file presence, live delivery, and HTML discovery. Version 2.4.2 fixed Posts-page discovery and reduced false severity from server-side cache/header discrepancies. Version 2.4.3 moved normal live endpoint verification into the authorised user's browser. Version 2.4.4 makes verification status conservative: saved results that need rechecking and browser/network request exceptions are shown as Not verified rather than false yellow Review findings, while successful redirects remain informational. Version 2.5.0 adds a deliberately simple text-only editor for existing Markdown companions and llms.txt, with backups, conflict detection, UTF-8 normalization, and atomic replacement. Version 2.6.0 adds WordPress-style pagination to the Pages and Posts lists. Version 2.6.1 hardens permissions, backups, release-manifest uploads, pagination preferences, and browser verification without adding public-page work.
 
 A specific page or post can also be excluded even when its Markdown file exists. The exclusion can be controlled either from BlogLogistics > Markdown for Agents or from the Markdown for Agents panel in the WordPress editor.
 
@@ -43,7 +43,7 @@ The plugin does not automatically generate, curate, or derive content for:
 * `/index.md`;
 * any `/path/index.md` companion file.
 
-Those files remain entirely under the site owner's control. Version 2.5.0 provides an optional administrator-only plain text editor for existing files, but it saves only the text the administrator explicitly enters. It does not create missing curated files or convert rendered WordPress HTML into Markdown.
+Those files remain entirely under the site owner's control. Administrators and Editors can use the optional plain text editor for existing files, but it saves only the text they explicitly enter. Authors and lower roles cannot access the plugin's management screen. It does not create missing curated files or convert rendered WordPress HTML into Markdown.
 
 == Installation ==
 
@@ -53,7 +53,7 @@ Those files remain entirely under the site owner's control. Version 2.5.0 provid
 4. Go to BlogLogistics > Markdown for Agents.
 5. Click **Scan Changes and Refresh Health**. The incremental scan detects companion files, refreshes the Markdown Health Dashboard, validates changed files and llms.txt references, and reuses unchanged encoding-validation results.
 6. Use **Force Full Rescan** when every companion should be re-read regardless of its saved scan signature.
-7. Use **Run Live Endpoint Verification** to have your administrator browser check public HTTP status, redirects, Markdown MIME type, and discovery markup.
+7. Use **Run Live Endpoint Verification** to have the authorised user's browser check public HTTP status, redirects, Markdown MIME type, and discovery markup.
 8. Use the **Pages** and **Posts** tabs to review health separately, filter items that need attention, paginate large lists, choose 20, 50, or 100 items per page, edit an existing Markdown file, view its public Markdown URL, and manage discovery or verification actions.
 9. Use the **llms.txt** tab for focused validation, local Markdown-reference health, and the optional plain text llms.txt editor.
 10. Use **Server & .htaccess** for server diagnostics, rule repair, live server-rule verification, and backup management.
@@ -62,19 +62,19 @@ Those files remain entirely under the site owner's control. Version 2.5.0 provid
 == Frequently Asked Questions ==
 
 = Does this plugin generate Markdown files? =
-No. Users create and curate the Markdown content. Version 2.5.0 can edit an existing Markdown file when an administrator explicitly opens the plain text editor, but it does not generate content or create missing companion files.
+No. Users create and curate the Markdown content. An authorised Administrator or Editor can edit an existing Markdown file through the plain text editor, but the plugin does not generate content or create missing companion files.
 
 = Does this plugin generate llms.txt? =
 No. llms.txt remains manually curated. Version 2.5.0 can edit an existing llms.txt file through the plain text editor, but it does not generate or create the file automatically.
 
 = What does the Markdown editor change? =
-Only the selected existing `.md` file or `llms.txt`. It does not edit the WordPress Page or Post. Before a successful save, the plugin creates a timestamped backup under `wp-content/bloglogistics-markdown-backups`, checks that the file has not changed since the editor was opened, writes UTF-8 without a BOM using LF line endings, and replaces the file atomically when the server permits it.
+Only the selected existing `.md` file or `llms.txt`. It does not edit the WordPress Page or Post. Before a successful save, the plugin creates a timestamped backup in a private directory outside the public web root when the host permits it, checks that the file has not changed since the editor was opened, writes UTF-8 without a BOM using LF line endings, and replaces the file atomically when the server permits it. A protected, hard-to-guess directory under `wp-content` is used only when no private external location is writable.
 
 = What Markdown should I use in the editor? =
 Keep it simple: `#`, `##`, and `###` headings, `**bold**`, `*italic*`, bullet lists, ordinary Markdown links, and blank lines between paragraphs. The editor does not prevent other Markdown syntax, but the interface encourages a restrained AI-readable subset.
 
 = Does the plugin check for Markdown files on every page load? =
-No. Filesystem checks occur only when an administrator explicitly runs the scan from BlogLogistics > Markdown for Agents.
+No. Filesystem checks occur only when an authorised Administrator or Editor explicitly runs the scan from BlogLogistics > Markdown for Agents.
 
 = What does the Markdown Health Dashboard check? =
 The manual scan reports companion presence, potentially stale files based on timestamps, UTF-8 encoding problems, common mojibake patterns, and llms.txt validation results. It does not rewrite any content.
@@ -116,13 +116,13 @@ The scan does not assign a Markdown URL to that page, so the public page outputs
 Yes. Use the **Do not advertise Markdown or llms.txt from this page** option in the WordPress editor, or use the Discovery controls in the separate Pages and Posts tabs under BlogLogistics > Markdown for Agents.
 
 = Where is the Markdown URL stored? =
-The URL is stored in the WordPress custom field `bloglogistics_markdown_url`. The custom field is registered for posts and pages and is intentionally not hidden.
+The URL is stored internally in the WordPress post metadata key `bloglogistics_markdown_url`. It is scanner-owned, hidden from REST editing, and accepted by the public discovery code only while it matches the content item's current permalink.
 
 = Why does the plugin modify .htaccess? =
 A physical `/slug/index.md` file requires a real `/slug/` directory. On Apache-compatible servers, that directory can intercept the normal WordPress `/slug/` permalink and return `Forbidden`. The compatibility rule sends the directory URL to WordPress while leaving `/slug/index.md` available as a static file.
 
 = Does the plugin back up .htaccess before changing it? =
-Yes. Before every write to an existing `.htaccess` file, the plugin creates a timestamped backup beside it, for example `.htaccess.bloglogistics-mfa-backup-20260917-110301`. If the new file cannot be verified after writing, the plugin attempts to restore the original automatically.
+Yes. Before every write to an existing `.htaccess` file, the plugin creates a timestamped copy in its private backup directory. If the new file cannot be verified after writing, the plugin attempts to restore the original automatically.
 
 = Where is the compatibility rule inserted? =
 Before writing anything, the plugin checks whether the equivalent rewrite directives already exist anywhere in `.htaccess`. If they do, the existing rule is respected and no duplicate is added. Only when no equivalent rule exists does the plugin insert its managed block immediately before `# BEGIN WordPress`, or at the top of the site's root `.htaccess` file when that marker is absent.
@@ -157,6 +157,15 @@ This plugin is provided by BlogLogistics as part of an active hosting, maintenan
 This notice does not restrict any rights granted under the GPL-3.0-or-later licence.
 
 == Changelog ==
+
+= 2.6.1 =
+* Allow standard WordPress Administrators and Editors to manage, verify, and edit curated Markdown files while excluding Authors and lower roles.
+* Keep Server & .htaccess diagnostics and modification actions restricted to Administrators.
+* Make `bloglogistics_markdown_url` scanner-owned and unavailable for REST or custom-field editing, and reject stale or altered mappings at use time.
+* Verify the FTPS server certificate when uploading the release manifest, while keeping the existing update server and manifest address unchanged.
+* Store new Markdown and `.htaccess` backups outside the public web root when hosting permissions permit, migrate recognised legacy backups, and use a protected hidden fallback directory when necessary.
+* Require a WordPress nonce before saving the 20/50/100 items-per-page preference.
+* Limit browser verification to one MiB of HTML and avoid downloading Markdown response bodies when only status and headers are required.
 
 = 2.6.0 =
 * Add WordPress-style pagination to the Pages and Posts administration lists.
